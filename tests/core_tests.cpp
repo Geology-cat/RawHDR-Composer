@@ -385,8 +385,7 @@ void test_merge_accuracy() {
 }
 
 // ---- ゴースト（動いた物）対策 ----
-// 暗い所を横切る四角い物が、フレームごとに違う位置に写っている。基準フレーム以外の位置に物が残らない
-// （二重像にならない）こと、基準フレームの位置には物が写ることを確かめる。
+// 暗い所を横切る四角い物が、フレームごとに違う位置に写っている。物が 1 か所だけに写る（二重像にならない）ことを確かめる。
 void test_deghost() {
     std::printf("ゴースト対策\n");
     const int w = 800, h = 600;
@@ -431,20 +430,17 @@ void test_deghost() {
     const hdr::MergeResult m0 = hdr::merge_frames(frames, plan, off);
     hdr::MergeOptions on;
     const hdr::MergeResult m1 = hdr::merge_frames(frames, plan, on);
-    int ref_o = 0;
-    for (int o = 0; o < 4; ++o) {
-        if (plan.order[o] == m1.reference) ref_o = o;
-    }
     // 対策しないと、最も明るいフレームの位置に物が写る（この場面の暗い所は最も明るいフレームから来る）。
     CHECK(excess(m0, obj_x(3)) > 0.5, "対策なしでゴーストが出ていない（テストの前提が崩れた）: %.2f", excess(m0, obj_x(3)));
+    // 対策すると、物はどれか 1 枚の位置（手本のフレーム。暗い所では基準フレームより明るい側に移ることがある）にだけ
+    // 写り、ほかの位置には残らない（二重像にならない）。
+    int shown = 0, ghosts = 0;
     for (int o = 0; o < 4; ++o) {
         const double e = excess(m1, obj_x(o));
-        if (o == ref_o) {
-            CHECK(e > 0.85 && e < 1.15, "基準フレームの位置に物が写っていない: %.2f", e);
-        } else {
-            CHECK(std::fabs(e) < 0.15, "フレーム %d の位置にゴーストが残っている: %.2f", o, e);
-        }
+        if (e > 0.85 && e < 1.15) ++shown;
+        else if (std::fabs(e) >= 0.15) ++ghosts;
     }
+    CHECK(shown == 1 && ghosts == 0, "物が 1 か所だけに写っていない（写った %d か所、中途半端 %d か所）", shown, ghosts);
     CHECK(m1.ghost_regions >= 1 && m1.ghost_fraction > 0.0, "動いた所が見つかっていない");
     // 動いた物から離れた所の重みは変わらない。
     double far = 0.0;

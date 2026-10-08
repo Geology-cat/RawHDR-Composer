@@ -212,7 +212,7 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
         // 基準フレームのままだと、暗い海などで色のノイズのまだらになる。
         const auto noisy = [&](int o) {
             const double dn = static_cast<double>(mean[o][i]) * plan.rel_exposure[o];
-            return std::sqrt(fS[o] * std::max(0.0, dn) + fO[o]) > 0.15 * std::max(1e-9, dn);
+            return std::sqrt(fS[o] * std::max(0.0, dn) + fO[o]) > 0.05 * std::max(1e-9, dn);
         };
         while (an + 1 < n && !sat[an + 1][i] && noisy(an)) ++an;
         anchor[i] = static_cast<int8_t>(an);
@@ -253,33 +253,28 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
         d.swap(g);
     }
     const float ra = static_cast<float>(std::min(0.95, std::max(0.0, opt.ramp_start)));
-    std::vector<float> fo(n), wnew(n);
+    // ブロックごとに、まわりの 4 区画それぞれの「手本と、使ってよい度合い」で配り直した重みを作り、
+    // 区画の中心からの位置で双線形に混ぜる（区画ごとに手本が切り替わる所で、四角い段差が出ないように）。
+    std::vector<float> fo(n), wnew(n), wsum(n), hb(n);
     for (int by = 0; by < gh; ++by) {
         for (int bx = 0; bx < gw; ++bx) {
             const std::size_t bi = static_cast<std::size_t>(by) * gw + bx;
-            // 区画の中心からの位置で、まわりの区画の値を双線形に補間する。
             const float fx = (bx + 0.5f) / G - 0.5f, fy = (by + 0.5f) / G - 0.5f;
             const int x0 = std::max(0, std::min(cw - 1, static_cast<int>(std::floor(fx))));
             const int y0 = std::max(0, std::min(ch - 1, static_cast<int>(std::floor(fy))));
             const int x1 = std::min(cw - 1, x0 + 1), y1 = std::min(ch - 1, y0 + 1);
             const float tx = std::min(1.0f, std::max(0.0f, fx - x0)), ty = std::min(1.0f, std::max(0.0f, fy - y0));
-            float denied = 0.0f;
-            for (int o = 0; o < n; ++o) {
-                const std::vector<float>& d = deny[o];
-                const float v = (1 - ty) * ((1 - tx) * d[static_cast<std::size_t>(y0) * cw + x0] + tx * d[static_cast<std::size_t>(y0) * cw + x1]) +
-                                ty * ((1 - tx) * d[static_cast<std::size_t>(y1) * cw + x0] + tx * d[static_cast<std::size_t>(y1) * cw + x1]);
-                fo[o] = 1.0f - std::min(1.0f, v);
-                denied = std::max(denied, 1.0f - fo[o]);
+            const std::size_t cidx[4] = {static_cast<std::size_t>(y0) * cw + x0, static_cast<std::size_t>(y0) * cw + x1,
+                                         static_cast<std::size_t>(y1) * cw + x0, static_cast<std::size_t>(y1) * cw + x1};
+            const float beta[4] = {(1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty};
+            bool touched = false;
+            for (int q = 0; q < 4 && !touched; ++q) {
+                if (anchor[cidx[q]] < 0) continue;
+                for (int o = 0; o < n; ++o) touched |= deny[o][cidx[q]] > 0.0f;
             }
-            if (denied <= 0.0f) continue;
-            const int an = anchor[static_cast<std::size_t>(by / G) * cw + bx / G];
-            if (an < 0) continue;  // 塊の外（なだらかにした裾）は手本が無いので変えない
-            fo[an] = 1.0f;
-            // 使ってよい度合い fo を掛けて、明るい方から重みを配り直す（合成の本体と同じ切り替え）。残りは手本へ。
-            float remaining = 1.0f;
-            for (int o = 0; o < n; ++o) wnew[o] = 0.0f;
-            for (int o = n - 1; o >= 0; --o) {
-                if (o == an) continue;
+            if (!touched) continue;
+            // このブロックでの各フレームの「使ってよさ」h（合成の本体と同じ切り替え）。
+            for (int o = 0; o < n; ++o) {
                 float mx = 0.0f;
                 for (int dy = -1; dy <= 1; ++dy) {
                     const int yy = std::min(gh - 1, std::max(0, by + dy));
@@ -289,19 +284,45 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
                     }
                 }
                 const float t = std::min(1.0f, std::max(0.0f, (mx - ra) / (1.0f - ra)));
-                const float hi = mx >= 1.0f ? 0.0f : 1.0f - t * t * (3.0f - 2.0f * t);
-                // 手本より暗いフレームは、手本が受け持てる所では要らない（ノイズが多い）。
-                const float use = o > an ? hi * fo[o] : 0.0f;
-                wnew[o] = remaining * use;
-                remaining -= wnew[o];
+                hb[o] = mx >= 1.0f ? 0.0f : 1.0f - t * t * (3.0f - 2.0f * t);
             }
-            wnew[an] += remaining;
-            res.ghost_mask[bi] = denied;
-            res.ghost_frame[bi] = static_cast<int8_t>(an);
-            for (int o = 0; o < n; ++o) {
-                float& w = res.weights[o][bi];
-                w = (1.0f - denied) * w + denied * wnew[o];
+            for (int o = 0; o < n; ++o) wsum[o] = 0.0f;
+            float dmax = 0.0f;
+            int an_show = -1;
+            float best_beta = -1.0f;
+            for (int q = 0; q < 4; ++q) {
+                const int an = anchor[cidx[q]];
+                float denied = 0.0f;
+                if (an >= 0) {
+                    for (int o = 0; o < n; ++o) {
+                        fo[o] = 1.0f - std::min(1.0f, deny[o][cidx[q]]);
+                        denied = std::max(denied, 1.0f - fo[o]);
+                    }
+                }
+                if (an < 0 || denied <= 0.0f) {
+                    // 塊の外・外すフレームの無い区画は、元の重みのまま。
+                    for (int o = 0; o < n; ++o) wsum[o] += beta[q] * res.weights[o][bi];
+                    continue;
+                }
+                fo[an] = 1.0f;
+                // 使ってよい度合い fo を掛けて、明るい方から重みを配り直す。残りは手本へ。手本より暗いフレームは使わない。
+                float remaining = 1.0f;
+                for (int o = 0; o < n; ++o) wnew[o] = 0.0f;
+                for (int o = n - 1; o > an; --o) {
+                    wnew[o] = remaining * hb[o] * fo[o];
+                    remaining -= wnew[o];
+                }
+                wnew[an] += remaining;
+                for (int o = 0; o < n; ++o) wsum[o] += beta[q] * ((1.0f - denied) * res.weights[o][bi] + denied * wnew[o]);
+                dmax += beta[q] * denied;
+                if (beta[q] > best_beta) {
+                    best_beta = beta[q];
+                    an_show = an;
+                }
             }
+            res.ghost_mask[bi] = dmax;
+            res.ghost_frame[bi] = static_cast<int8_t>(an_show);
+            for (int o = 0; o < n; ++o) res.weights[o][bi] = wsum[o];
         }
     }
     // 動いたとみなして、いずれかのフレームを外した区画の割合。
