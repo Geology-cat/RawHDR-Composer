@@ -9,7 +9,9 @@
 //   --ramp X              明るいフレームの重みを下げ始める明るさ（飽和の閾値に対する比、既定 0.55）
 //   --feather PX          重みのちらつきを抑えるぼかしの幅（画素、既定 16）
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
-//   --align               自動で位置合わせする（CFA の周期の倍数の平行移動。基準フレームは動かさない）
+//   --align               自動で位置合わせする（平行移動・回転・1 画素未満のずれ。基準フレームは動かさない）。
+//                         周期の倍数の平行移動で足りるフレームは画素をそのまま動かし、足りないフレームは
+//                         色補間して動かしてから元の色の並びに戻す
 //   --shift N:dx,dy       N 枚目（入力の順）のずれを手で指定する（--align の結果より優先）
 //   --no-average          平均型の合成をしない（白飛びしていない中で最も明るいフレームだけを使う）
 //   --no-deghost          動いた物のゴースト対策をしない（既定はする）
@@ -254,9 +256,14 @@ int cmd_merge(int argc, char** argv) {
             }
         }
         for (std::size_t i = 0; i < frames.size(); ++i) {
-            hdr::apply_shift(frames[i], shifts[i].dx, shifts[i].dy);
-            std::printf("  ずれ [%zu] %+d, %+d 画素%s\n", i + 1, frames[i].shift_x, frames[i].shift_y,
-                        shifts[i].reliable ? "" : "（推定が不確か）");
+            hdr::apply_frame_shift(frames[i], shifts[i], plan.clip[i]);
+            if (frames[i].warped) {
+                std::printf("  ずれ [%zu] %+.2f, %+.2f 画素  回転 %+.3f 度  拡大 %+.3f%%（色補間して動かした）%s\n", i + 1, frames[i].warp[2],
+                            frames[i].warp[3], shifts[i].angle_deg,
+                            (std::hypot(frames[i].warp[0], frames[i].warp[1]) - 1.0) * 100.0, shifts[i].reliable ? "" : "（推定が不確か）");
+            } else {
+                std::printf("  ずれ [%zu] %+d, %+d 画素%s\n", i + 1, frames[i].shift_x, frames[i].shift_y, shifts[i].reliable ? "" : "（推定が不確か）");
+            }
         }
         plan = hdr::estimate_exposures(frames);
         ref = reference;

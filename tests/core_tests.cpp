@@ -36,7 +36,7 @@ int g_failed = 0, g_checks = 0;
     } while (0)
 
 // 場面の明るさ（任意の単位）。左→右のなだらかな勾配、明るい円（太陽）、細かい模様。
-double scene(int x, int y, int w, int h) {
+double scene(double x, double y, int w, int h) {
     const double gx = static_cast<double>(x) / w, gy = static_cast<double>(y) / h;
     double v = 0.002 + 0.3 * gx * gx + 0.05 * gy;
     v *= 1.0 + 0.2 * std::sin(x * 0.05) * std::sin(y * 0.07);
@@ -46,8 +46,10 @@ double scene(int x, int y, int w, int h) {
     return v;
 }
 
+// map があれば、画素 (x, y) に場面の (mx, my) を写す（カメラの回転・1 画素未満のずれの想定）。
 hdr::RawFrame make_frame(int w, int h, double exposure, double gain_dn, float clip, double noise, unsigned seed,
-                         double shutter, int ox = 0, int oy = 0) {
+                         double shutter, int ox = 0, int oy = 0,
+                         const std::function<void(double, double, double&, double&)>& map = nullptr) {
     hdr::RawFrame f;
     f.path = f.file_name = "synthetic_" + std::to_string(seed) + ".raw";
     f.width = w;
@@ -79,7 +81,9 @@ hdr::RawFrame make_frame(int w, int h, double exposure, double gain_dn, float cl
         for (int x = 0; x < w; ++x) {
             const int c = f.cfa.at(x, y);
             // 中身を (ox, oy) だけずらした場面（カメラが動いた想定）。
-            double v = scene(x + ox, y + oy, w, h) * chan_gain[c] * exposure * gain_dn;
+            double mx = x + ox, my = y + oy;
+            if (map) map(x, y, mx, my);
+            double v = scene(mx, my, w, h) * chan_gain[c] * exposure * gain_dn;
             if (noise > 0.0) v += nd(rng) * std::sqrt(noise * noise + std::max(0.0, v) * 0.5);
             f.data[static_cast<std::size_t>(y) * w + x] = static_cast<float>(std::min<double>(v, clip));
         }
@@ -565,6 +569,91 @@ void test_alignment() {
     // 元に戻せる。
     hdr::apply_shift(frames[0], 0, 0);
     CHECK(frames[0].original.empty() && frames[0].shift_x == 0, "ずれを 0 に戻せない");
+
+    // 三脚（ずれが周期の倍数）では再モザイクしない（画素がそのまま）。
+    for (int k = 0; k < 3; ++k) CHECK(!s[k].needs_warp, "周期の倍数のずれなのに再モザイクしようとした %d: %.5f %.5f %.3f %.3f", k, s[k].warp[0], s[k].warp[1], s[k].warp[2], s[k].warp[3]);
+}
+
+// ---- 回転・1 画素未満の位置合わせ ----
+void test_subpixel_alignment() {
+    std::printf("回転・1 画素未満の位置合わせ\n");
+    const int w = 960, h = 720;
+    const float clip = 15000.0f;
+    const double expo[3] = {1.0, 4.0, 16.0};
+    const double shutter[3] = {1.0 / 1000, 1.0 / 250, 1.0 / 60};
+    // 基準（2 枚目）に対して、1 枚目は 0.25 度回って (+3.4, −1.7)、3 枚目は −0.15 度回って (−2.6, +4.3) ずれている。
+    const double ang[3] = {0.25, 0.0, -0.15};
+    const double tx[3] = {3.4, 0.0, -2.6}, ty[3] = {-1.7, 0.0, 4.3};
+    const double cx = (w - 1) * 0.5, cy = (h - 1) * 0.5;
+    std::vector<hdr::RawFrame> frames;
+    for (int k = 0; k < 3; ++k) {
+        const double r = ang[k] * M_PI / 180.0;
+        // 画素 (x, y) に写るのは、場面の S(x, y) = c + R·(q) + t（q = 画素 − c）
+        const auto map = [=](double x, double y, double& mx, double& my) {
+            const double qx = x - cx, qy = y - cy;
+            mx = cx + std::cos(r) * qx - std::sin(r) * qy + tx[k];
+            my = cy + std::sin(r) * qx + std::cos(r) * qy + ty[k];
+        };
+        frames.push_back(make_frame(w, h, expo[k], 400.0, clip, 3.0, 60 + k, shutter[k], 0, 0, map));
+    }
+    hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    const std::vector<hdr::FrameShift> s = hdr::estimate_shifts(frames, plan, 1);
+    for (int k = 0; k < 3; ++k) {
+        if (k == 1) continue;
+        // aligned(q) = original(W(q)) が場面 q になるには S(W(q)) = q、つまり W = S⁻¹。
+        // 四隅で、推定した W を通した後に S で写した位置が元の位置に戻るかを見る。
+        const double r = ang[k] * M_PI / 180.0;
+        double worst = 0.0;
+        for (double qx : {-cx, cx}) {
+            for (double qy : {-cy, cy}) {
+                const double wx = s[k].warp[0] * qx - s[k].warp[1] * qy + s[k].warp[2];
+                const double wy = s[k].warp[1] * qx + s[k].warp[0] * qy + s[k].warp[3];
+                const double bx = std::cos(r) * wx - std::sin(r) * wy + tx[k];
+                const double by = std::sin(r) * wx + std::cos(r) * wy + ty[k];
+                worst = std::max(worst, std::hypot(bx - qx, by - qy));
+            }
+        }
+        CHECK(s[k].needs_warp, "回転があるのに再モザイクしない %d", k);
+        CHECK(worst < 0.15, "回転・ずれの推定の誤差 %d: 隅で %.3f 画素（回転 %.3f 度、正解 %.3f 度）", k, worst, s[k].angle_deg, -ang[k]);
+        hdr::apply_frame_shift(frames[k], s[k], plan.clip[k]);
+        CHECK(frames[k].warped, "再モザイクされていない %d", k);
+    }
+    int x0, y0, x1, y1;
+    hdr::valid_area(frames, x0, y0, x1, y1);
+    CHECK(x0 > 0 && y0 > 0 && x1 < w && y1 < h && x1 - x0 > w - 40 && y1 - y0 > h - 40, "有効な範囲 (%d,%d)-(%d,%d)", x0, y0, x1, y1);
+    // 合わせた後は、露出をそろえた値が基準とほぼ一致する（細かい模様の所も含めて）。
+    plan = hdr::estimate_exposures(frames);
+    double sum = 0.0;
+    long cnt = 0;
+    for (int y = y0 + 8; y < y1 - 8; y += 2) {
+        for (int x = x0 + 8; x < x1 - 8; x += 2) {
+            const double a = frames[0].value(x, y) * 4.0, b = frames[1].value(x, y);
+            if (b > 2000.0 && b < 12000.0 && a < 12000.0) {
+                sum += std::fabs(a - b) / b;
+                ++cnt;
+            }
+        }
+    }
+    CHECK(cnt > 1000 && sum / cnt < 0.05, "合わせた後の違いの平均が大きい %.4f（%ld 点）", cnt ? sum / cnt : 0.0, cnt);
+    // 合成もできる（飽和の扱いが壊れていない: 明るい円の所で重みが飽和したフレームに漏れない）。
+    hdr::MergeOptions mo;
+    const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
+    double truth_err = 0.0;
+    long tn = 0;
+    const double chan_gain[3] = {0.6, 1.0, 0.8};
+    for (int y = y0 + 8; y < y1 - 8; y += 3) {
+        for (int x = x0 + 8; x < x1 - 8; x += 3) {
+            const int c = m.cfa.at(x, y);
+            const double truth = scene(x, y, w, h) * chan_gain[c] * expo[0] * 400.0 / clip;
+            if (truth >= 0.9 || truth < 1e-3) continue;
+            truth_err += std::fabs(m.data[static_cast<std::size_t>(y) * w + x] - truth) / truth;
+            ++tn;
+        }
+    }
+    CHECK(tn > 1000 && truth_err / tn < 0.06, "合成の正解からの誤差の平均 %.4f", tn ? truth_err / tn : 0.0);
+    // 元に戻せる。
+    hdr::apply_shift(frames[0], 0, 0);
+    CHECK(!frames[0].warped && frames[0].original.empty(), "再モザイクを元に戻せない");
 }
 
 }  // namespace
@@ -575,6 +664,7 @@ int main() {
     test_deghost();
     test_demosaic();
     test_alignment();
+    test_subpixel_alignment();
     std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
     return g_failed == 0 ? 0 : 1;
 }

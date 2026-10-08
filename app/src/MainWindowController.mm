@@ -429,8 +429,8 @@ const int kPreviewSize = 3200;
         NSString* title;
         CGFloat width;
     };
-    const Col cols[] = {{@"number", @"#", 22}, {@"name", @"ファイル", 112}, {@"shutter", @"シャッター", 58},
-                        {@"ev", @"相対EV", 50}, {@"shift", @"ずれ", 46}};
+    const Col cols[] = {{@"number", @"#", 22}, {@"name", @"ファイル", 84}, {@"shutter", @"シャッター", 58},
+                        {@"ev", @"相対EV", 50}, {@"shift", @"ずれ", 62}};
     for (const Col& c : cols) {
         NSTableColumn* col = [[NSTableColumn alloc] initWithIdentifier:c.ident];
         [[col headerCell] setStringValue:c.title];
@@ -534,8 +534,10 @@ const int kPreviewSize = 3200;
     [_alignPopup addItemsWithTitles:@[ @"しない（三脚）", @"自動", @"手動（自動の結果を微調整）" ]];
     [_alignPopup setTarget:self];
     [_alignPopup setAction:@selector(alignChanged:)];
-    [_alignPopup setToolTip:@"他のフレームを基準フレームに合わせます（平行移動。色の並びを崩さないよう2画素単位）。"
-                            @"基準フレームは動かしません。動かした分の端は DNG の切り抜きで隠れます"];
+    [_alignPopup setToolTip:@"他のフレームを基準フレームに合わせます（平行移動・回転・1 画素未満のずれ）。"
+                            @"2 画素単位の平行移動で足りるフレームは画素をそのまま動かし、足りないフレーム（手持ちなど）は色補間して動かしてから"
+                            @"元の色の並びに戻します（わずかに柔らかくなります）。"
+                            @"基準フレームは動かしません。動かした分の端は DNG の切り抜きで隠れます。三脚で撮ったときは「しない」がおすすめです"];
     NSMutableArray<NSView*>* nudges = [NSMutableArray arrayWithObject:[NSTextField labelWithString:@"選んだフレーム:"]];
     for (NSString* t in @[ @"←", @"↑", @"↓", @"→", @"0" ]) {
         NSButton* b = [NSButton buttonWithTitle:t target:self action:@selector(nudge:)];
@@ -1030,7 +1032,11 @@ const int kPreviewSize = 3200;
         r.relativeEV = @"–";
         r.clip = @"–";
         r.isReference = static_cast<int>(i) == ref;
-        r.shift = (f.shift_x || f.shift_y) ? [NSString stringWithFormat:@"%+d,%+d", f.shift_x, f.shift_y] : @"0";
+        if (f.warped) {
+            r.shift = [NSString stringWithFormat:@"%+.1f,%+.1f", f.warp[2], f.warp[3]];  // 回転は解析の結果に出す
+        } else {
+            r.shift = (f.shift_x || f.shift_y) ? [NSString stringWithFormat:@"%+d,%+d", f.shift_x, f.shift_y] : @"0";
+        }
         if (planned) {
             for (std::size_t o = 0; o < _plan.order.size(); ++o) {
                 if (_plan.order[o] == static_cast<int>(i)) r.relativeEV = [NSString stringWithFormat:@"%+.2f", std::log2(_plan.rel_exposure[o])];
@@ -1066,6 +1072,16 @@ const int kPreviewSize = 3200;
                         f.measured ? @"" : @" 名目値"];
     }
     [s appendFormat:@"  ※(差) = EXIF の名目値とのずれ\n  離れた組も %zu 組測って合わせた\n", _plan.wide_fits.size()];
+    bool anyWarp = false;
+    for (const hdr::RawFrame& f : _frames) anyWarp |= f.warped;
+    if (anyWarp) {
+        [s appendString:@"\n回転・1 画素未満の位置合わせ\n（色補間して動かしたフレーム）\n"];
+        for (std::size_t i = 0; i < _frames.size(); ++i) {
+            const hdr::RawFrame& f = _frames[i];
+            if (!f.warped) continue;
+            [s appendFormat:@" %zu: %+.2f,%+.2f 画素 回転 %+.3f°\n", i + 1, f.warp[2], f.warp[3], std::atan2(f.warp[1], f.warp[0]) * 180.0 / M_PI];
+        }
+    }
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
         if (_merged.average_noise_ratio < 1.0) {
@@ -1112,7 +1128,7 @@ const int kPreviewSize = 3200;
     bool changed = false;
     if (settings.align == kAlignModeNone) {
         for (hdr::RawFrame& f : _frames) {
-            changed |= f.shift_x != 0 || f.shift_y != 0;
+            changed |= f.shift_x != 0 || f.shift_y != 0 || f.warped;
             hdr::apply_shift(f, 0, 0);
         }
     } else if (estimate) {
@@ -1120,7 +1136,7 @@ const int kPreviewSize = 3200;
         for (hdr::RawFrame& f : _frames) hdr::apply_shift(f, 0, 0);
         const hdr::ExposurePlan plan0 = hdr::estimate_exposures(_frames);
         const std::vector<hdr::FrameShift> shifts = hdr::estimate_shifts(_frames, plan0, ref);
-        for (std::size_t i = 0; i < _frames.size(); ++i) hdr::apply_shift(_frames[i], shifts[i].dx, shifts[i].dy);
+        for (std::size_t i = 0; i < _frames.size(); ++i) hdr::apply_frame_shift(_frames[i], shifts[i], plan0.clip[i]);
         changed = true;
     }
     if (changed) _plan = hdr::estimate_exposures(_frames);
@@ -1154,7 +1170,7 @@ const int kPreviewSize = 3200;
     [_nudgeRow setHidden:!manual];
     switch ([_alignPopup indexOfSelectedItem]) {
         case kAlignModeAuto:
-            [_alignNote setStringValue:@"各フレームのずれは一覧の「ずれ」の列。「位置の確認」で基準との違いを赤く表示します"];
+            [_alignNote setStringValue:@"各フレームのずれは一覧の「ずれ」の列（横,縦 の画素。回転は「解析の結果」）。「位置の確認」で基準との違いを赤く表示します"];
             break;
         case kAlignModeManual:
             [_alignNote setStringValue:@"一覧でフレームを選び、矢印で動かします。「位置の確認」で赤い輪郭が消える所に合わせてください"];
@@ -1186,7 +1202,15 @@ const int kPreviewSize = 3200;
         hdr::RawFrame& f = self->_frames[row];
         const int period = f.cfa.is_xtrans() ? 6 : 2;
         const int mul = period / 2;
-        hdr::apply_shift(f, reset ? 0 : f.shift_x + ddx * mul, reset ? 0 : f.shift_y + ddy * mul);
+        if (reset) {
+            hdr::apply_shift(f, 0, 0);
+        } else if (f.warped) {
+            // 回転・1 画素未満のずれを保ったまま、平行移動だけを動かす。
+            double w[4] = {f.warp[0], f.warp[1], f.warp[2] + ddx * mul, f.warp[3] + ddy * mul};
+            hdr::apply_warp(f, w, self->_plan.clip[row], 0.0);
+        } else {
+            hdr::apply_shift(f, f.shift_x + ddx * mul, f.shift_y + ddy * mul);
+        }
         self->_plan = hdr::estimate_exposures(self->_frames);
         NSArray<FrameRow*>* rows = [self rowsOnQueue];
         dispatch_async(dispatch_get_main_queue(), ^{

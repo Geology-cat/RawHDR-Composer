@@ -62,6 +62,11 @@ struct RawFrame {
     // （ずれが 0 のときは original は空）。
     std::vector<float> original;
     int shift_x = 0, shift_y = 0;
+    // 回転・1 画素未満の位置合わせ（apply_warp）。warped なら data は、元の画素を色補間して動かし、
+    // 元の色の並び（CFA）に戻したもの。warp = {a, b, tx, ty}: 画像の中心 c からの位置 q について
+    // aligned(c + q) = original(c + [a −b; b a]·q + t)。shift_x・shift_y は t を丸めた値（表示用）。
+    bool warped = false;
+    double warp[4] = {1.0, 0.0, 0.0, 0.0};
 
     // 機種の既定の切り抜き（見える範囲の座標）。DNG の DefaultCrop に書く。
     int crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
