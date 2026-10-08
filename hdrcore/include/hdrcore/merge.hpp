@@ -28,6 +28,14 @@ struct MergeOptions {
     int feather_px = 16;
     // 基準フレーム（入力の番号）。-1 = 自動（名目の露光量が中央のもの）。
     int reference = -1;
+
+    // ---- ゴースト（動いた物）対策 ----
+    // 露出の隣り合うフレームを、露出をそろえて小さな区画（CFA の周期の 4 倍四方）ごとに比べ、ノイズで説明できない
+    // 違いがある所を「動いた所」とする。つながった動いた所ごとに 1 枚のフレーム（そこ全体で白飛びしていない中で
+    // 最も明るいもの）だけを使うので、二重像・縁の色の滲みが出ない。
+    bool deghost = true;
+    // 検出の感度（0〜1）。大きいほど小さな違いも動いたとみなす（そのぶん 1 枚だけを使う所が増え、ノイズが少し増える）。
+    double ghost_sensitivity = 0.5;
 };
 
 struct MergeResult {
@@ -65,6 +73,13 @@ struct MergeResult {
     int grid_w = 0, grid_h = 0;
     std::vector<std::vector<float>> weights;
     double clipped_fraction = 0.0;  // 最も暗いフレームでも飽和していたブロックの割合
+
+    // ゴースト対策（ブロック単位。空なら対策していない）。ghost_mask = 1 枚のフレームに固定した度合い（0〜1、
+    // 縁はなだらか）、ghost_frame = 固定したフレーム（order の番号、固定していない所は -1）。
+    std::vector<float> ghost_mask;
+    std::vector<int8_t> ghost_frame;
+    int ghost_regions = 0;          // 動いた所（つながった領域）の数
+    double ghost_fraction = 0.0;    // 1 枚に固定した面積の割合
 };
 
 // frames と plan は estimate_exposures() に渡したもの・返ってきたもの。

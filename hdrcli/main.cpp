@@ -11,6 +11,8 @@
 //   --safety X            飽和とみなす閾値（飽和レベルに対する比、既定 0.92）
 //   --align               自動で位置合わせする（CFA の周期の倍数の平行移動。基準フレームは動かさない）
 //   --shift N:dx,dy       N 枚目（入力の順）のずれを手で指定する（--align の結果より優先）
+//   --no-deghost          動いた物のゴースト対策をしない（既定はする）
+//   --ghost S             ゴーストの検出の感度（0〜1、既定 0.5）。大きいほど小さな違いも動いたとみなす
 //   --compress S          明暗差の圧縮の強さ（0〜1、既定 0 = しない、0.5 = 標準、1 = 最大）。月などを抑え、暗部を持ち上げる倍率をデータに焼き込む
 //   --no-ca               倍率色収差（月の縁の赤・緑の縁取り）を補正しない
 //   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
@@ -51,6 +53,7 @@ void usage() {
                  "使い方:\n"
                  "  rawhdr info  RAW...\n"
                  "  rawhdr merge [-o OUT.dng] [--ref N] [--format auto|cfa|linear] [--ramp X] [--feather PX] [--safety X] [--no-compress]\n"
+                 "               [--no-deghost] [--ghost S] [--compress S] [--align] [--no-ca]\n"
                  "               [--lens-xmp] [--baseline EV] [--debug DIR] RAW...\n");
 }
 
@@ -115,6 +118,17 @@ void write_debug(const std::string& dir, const hdr::MergeResult& m, const std::v
         }
     }
     hdr::write_png(dir + "/source_map.png", hdr::apply_orientation(sm, ref.orientation));
+    if (!m.ghost_mask.empty()) {
+        // 動いた所（ゴースト対策で重みを変えた所）を白く。
+        std::vector<uint8_t> g(m.ghost_mask.size());
+        for (std::size_t i = 0; i < g.size(); ++i) g[i] = static_cast<uint8_t>(std::lround(255.0 * m.ghost_mask[i]));
+        hdr::Rgb8Image gm;
+        gm.width = m.grid_w;
+        gm.height = m.grid_h;
+        gm.rgb.resize(g.size() * 3);
+        for (std::size_t i = 0; i < g.size(); ++i) gm.rgb[i * 3] = gm.rgb[i * 3 + 1] = gm.rgb[i * 3 + 2] = g[i];
+        hdr::write_png(dir + "/ghost_mask.png", hdr::apply_orientation(gm, ref.orientation));
+    }
 }
 
 int cmd_merge(int argc, char** argv) {
@@ -157,6 +171,10 @@ int cmd_merge(int argc, char** argv) {
             use_adobe = false;
         } else if (a == "--compress") {
             compress.strength = std::atof(next().c_str());
+        } else if (a == "--no-deghost") {
+            mo.deghost = false;
+        } else if (a == "--ghost") {
+            mo.ghost_sensitivity = std::atof(next().c_str());
         } else if (a == "--no-ca") {
             fix_ca = false;
         } else if (a == "--align") {
@@ -248,6 +266,9 @@ int cmd_merge(int argc, char** argv) {
     hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
     std::printf("合成: %.1f秒  基準 [%d] %s  最暗でも飽和 %.4f%%\n", seconds_since(t2), m.reference + 1,
                 frames[m.reference].file_name.c_str(), m.clipped_fraction * 100.0);
+    if (mo.deghost) {
+        std::printf("  ゴースト対策: 動いた所 %d か所、面積 %.2f%%（感度 %.2f）\n", m.ghost_regions, m.ghost_fraction * 100.0, mo.ghost_sensitivity);
+    }
     if (m.anchor_samples >= 5000) {
         std::printf("  明るさの基準合わせ: ×%.4f（基準フレームとじかに比べた画素 %d）\n", m.anchor_correction, m.anchor_samples);
     } else {

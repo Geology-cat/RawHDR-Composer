@@ -66,7 +66,7 @@
 
 namespace {
 
-enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3, kViewAlign = 4, kViewChange = 5 };
+enum ViewMode : NSInteger { kViewMerged = 0, kViewOverlay = 1, kViewSourceMap = 2, kViewFrame = 3, kViewAlign = 4, kViewChange = 5, kViewGhost = 6 };
 enum AlignMode : NSInteger { kAlignModeNone = 0, kAlignModeAuto = 1, kAlignModeManual = 2 };
 
 // 由来マップの色（暗い→明るい の順）。
@@ -137,6 +137,35 @@ hdr::Rgb8Image source_map(const hdr::MergeResult& m, int max_size) {
             }
             uint8_t* d = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
             for (int c = 0; c < 3; ++c) d[c] = static_cast<uint8_t>(std::lround(std::min(255.0, n ? acc[c] / n : 0.0)));
+        }
+    }
+    return out;
+}
+
+// 動いた所: 合成結果を暗めの灰色で描き、ゴースト対策で重みを変えた所を赤く重ねる。
+hdr::Rgb8Image ghost_image(const hdr::Rgb8Image& base, const hdr::MergeResult& m, int max_size) {
+    hdr::Rgb8Image out = base;
+    if (m.ghost_mask.empty()) return out;
+    const int cell = preview_cell(m.width, m.height, m.cfa, max_size);
+    const int step = cell / m.block;
+    if (out.width != m.width / cell || out.height != m.height / cell) return out;
+    for (int oy = 0; oy < out.height; ++oy) {
+        for (int ox = 0; ox < out.width; ++ox) {
+            double a = 0.0;
+            int n = 0;
+            for (int by = oy * step; by < (oy + 1) * step && by < m.grid_h; ++by) {
+                for (int bx = ox * step; bx < (ox + 1) * step && bx < m.grid_w; ++bx) {
+                    a += m.ghost_mask[static_cast<std::size_t>(by) * m.grid_w + bx];
+                    ++n;
+                }
+            }
+            a = n ? a / n : 0.0;
+            uint8_t* d = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
+            const double g = (0.3 * d[0] + 0.59 * d[1] + 0.11 * d[2]) * 0.6;
+            const double k = a > 0.0 ? 0.35 + 0.5 * a : 0.0;
+            d[0] = static_cast<uint8_t>(std::lround(g + (255.0 - g) * k));
+            d[1] = static_cast<uint8_t>(std::lround(g * (1.0 - k)));
+            d[2] = static_cast<uint8_t>(std::lround(g * (1.0 - k)));
         }
     }
     return out;
@@ -256,6 +285,9 @@ const int kPreviewSize = 3200;
     NSSlider* _featherSlider;
     NSSlider* _compressSlider;
     NSTextField* _compressLabel;
+    NSButton* _deghostCheck;
+    NSSlider* _ghostSlider;
+    NSTextField* _ghostLabel;
     NSTextField* _rampLabel;
     NSTextField* _safetyLabel;
     NSTextField* _featherLabel;
@@ -428,13 +460,14 @@ const int kPreviewSize = 3200;
     [tableScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
     // ---- 中央: プレビュー ----
-    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム", @"位置の確認", @"前回との違い" ]
+    _modeControl = [NSSegmentedControl segmentedControlWithLabels:@[ @"合成結果", @"重ねて表示", @"由来マップ", @"選んだフレーム", @"位置の確認", @"前回との違い", @"動いた所" ]
                                                      trackingMode:NSSegmentSwitchTrackingSelectOne
                                                            target:self
                                                            action:@selector(viewModeChanged:)];
     [_modeControl setSelectedSegment:kViewMerged];
     [_modeControl setToolTip:@"由来マップ: どのフレームを使ったかを色で表示（色はフレーム一覧の番号の色）。"
-                             @"前回との違い: 合成の設定を変えたとき、前の設定の結果から変わった所を赤く表示"];
+                             @"前回との違い: 合成の設定を変えたとき、前の設定の結果から変わった所を赤く表示。"
+                             @"動いた所: ゴースト対策で、動いた物を基準フレームにそろえた所を赤く表示"];
     _evSlider = [NSSlider sliderWithValue:0 minValue:-6 maxValue:6 target:self action:@selector(viewModeChanged:)];
     [_evSlider setContinuous:NO];
     [_evSlider setToolTip:@"プレビューの明るさ（段）。書き出す DNG には影響しません"];
@@ -538,6 +571,20 @@ const int kPreviewSize = 3200;
                                        tooltip:@"月や光源を抑え、暗部を持ち上げる「覆い焼き・焼き込み」の倍率を、輪郭に沿ってデータに焼き込みます。"
                                                @"開いたときの明るさも整えるので、Lightroom の露光量を動かさずに、シャドウ・ハイライトのスライダーだけで"
                                                @"仕上げられる幅に収まります。50% が標準、100% で最も強く縮めます。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
+    _deghostCheck = [NSButton checkboxWithTitle:@"動いた物のゴーストを取り除く" target:self action:@selector(settingChanged:)];
+    [_deghostCheck setState:defaults.deghost ? NSControlStateValueOn : NSControlStateValueOff];
+    [_deghostCheck setToolTip:@"撮影の間に動いた物（人・車・枝・波・雲・光の筋など）が二重や半透明に写るのを防ぎます。"
+                              @"フレームどうしを比べてノイズでは説明できない違いがある所を探し、そこでは基準フレームと食い違うフレームを使いません。"
+                              @"動いた所は基準フレームの瞬間の姿になります（波は長い露出の滑らかさが減り、ノイズが少し増えます）。"
+                              @"見つかった所は表示の「動いた所」で赤く示します"];
+    NSStackView* ghostRow = [self sliderRow:@"動きの検出の感度"
+                                     slider:&_ghostSlider
+                                      label:&_ghostLabel
+                                        min:0
+                                        max:100
+                                      value:defaults.ghost_sensitivity * 100.0
+                                    tooltip:@"大きいほど、小さな違いも「動いた」とみなします。ゴーストが残るときは上げ、"
+                                            @"動いていない所まで赤くなる（ノイズが増える）ときは下げます。50% が標準"];
     _caCheck = [NSButton checkboxWithTitle:@"色の縁取り（倍率色収差）を補正" target:self action:@selector(settingChanged:)];
     [_caCheck setState:NSControlStateValueOn];
     [_caCheck setToolTip:@"レンズの倍率色収差（明るい物の縁の赤・緑・青の縁取り）を、合成の直後に R・B をわずかに拡大縮小して補正します。"
@@ -583,7 +630,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, compressRow, _caCheck, _mergeButton,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _deghostCheck, ghostRow, compressRow, _caCheck, _mergeButton,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -591,7 +638,7 @@ const int kPreviewSize = 3200;
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, compressRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, ghostRow, compressRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
     [right setCustomSpacing:10 afterView:_caCheck];
@@ -697,6 +744,8 @@ const int kPreviewSize = 3200;
     [_safetyLabel setStringValue:[NSString stringWithFormat:@"%.2f", [_safetySlider doubleValue]]];
     [_featherLabel setStringValue:[NSString stringWithFormat:@"%.0f px", [_featherSlider doubleValue]]];
     [_compressLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_compressSlider doubleValue]]];
+    [_ghostLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_ghostSlider doubleValue]]];
+    [_ghostSlider setEnabled:[_deghostCheck state] == NSControlStateValueOn];
     const double ev = std::round([_evSlider doubleValue] * 2.0) / 2.0;
     [_evLabel setStringValue:[NSString stringWithFormat:@"表示 %@%.1f EV", ev > 0 ? @"+" : (ev < 0 ? @"" : @"±"), ev]];
 }
@@ -706,6 +755,8 @@ const int kPreviewSize = 3200;
     s.merge.ramp_start = [_rampSlider doubleValue];
     s.merge.safety = [_safetySlider doubleValue];
     s.merge.feather_px = static_cast<int>(std::lround([_featherSlider doubleValue]));
+    s.merge.deghost = [_deghostCheck state] == NSControlStateValueOn;
+    s.merge.ghost_sensitivity = [_ghostSlider doubleValue] / 100.0;
     s.compress = [_compressSlider doubleValue] / 100.0;
     s.fix_ca = [_caCheck state] == NSControlStateValueOn;
     s.reference = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // 先頭は「自動」
@@ -972,6 +1023,9 @@ const int kPreviewSize = 3200;
     [s appendFormat:@"  ※(差) = EXIF の名目値とのずれ\n  離れた組も %zu 組測って合わせた\n", _plan.wide_fits.size()];
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
+        if (!_merged.ghost_mask.empty()) {
+            [s appendFormat:@"動いた所: %d か所、面積 %.2f%%\n", _merged.ghost_regions, _merged.ghost_fraction * 100.0];
+        }
         if (_lateralCa.valid) {
             [s appendFormat:@"色収差の補正: 隅で R %+.1f px・B %+.1f px\n", _lateralCa.corner_shift_px[0], _lateralCa.corner_shift_px[2]];
         }
@@ -1252,6 +1306,11 @@ const int kPreviewSize = 3200;
                 }
             } else if (mode == kViewSourceMap) {
                 img = source_map(m, kPreviewSize);
+            } else if (mode == kViewGhost) {
+                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
+                po.local_tone = true;
+                img = ghost_image(hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po), m,
+                                  kPreviewSize);
             } else {
                 po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
                 // 明暗差を圧縮したときは、Lightroom で開いたときと同じ見え方で描く（局所トーンマッピングを重ねない）。
@@ -1508,6 +1567,8 @@ const int kPreviewSize = 3200;
             if ([p[0] isEqualToString:@"safety"]) [_safetySlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"feather"]) [_featherSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"compress"]) [_compressSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"ghost"]) [_ghostSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"deghost"]) [_deghostCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
         }
         _autoChange = nil;
         [self refreshSettingLabels];

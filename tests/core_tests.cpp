@@ -315,6 +315,88 @@ void test_merge_accuracy() {
     CHECK(worst_col < 0.01, "列ごとの平均の誤差が大きい（最大 %.4f）", worst_col);
 }
 
+// ---- ゴースト（動いた物）対策 ----
+// 暗い所を横切る四角い物が、フレームごとに違う位置に写っている。基準フレーム以外の位置に物が残らない
+// （二重像にならない）こと、基準フレームの位置には物が写ることを確かめる。
+void test_deghost() {
+    std::printf("ゴースト対策\n");
+    const int w = 800, h = 600;
+    const float clip = 15000.0f;
+    const double actual[4] = {1.0, 4.0, 16.0, 64.0};
+    const double shutter[4] = {1.0 / 1000, 1.0 / 250, 1.0 / 60, 1.0 / 15};
+    const double chan_gain[3] = {0.6, 1.0, 0.8};
+    const double obj = 0.08;  // 物の明るさ（場面の単位で背景に足す）
+    const auto obj_x = [](int o) { return 120 + 90 * o; };
+    const int oy0 = 300, side = 48;
+    std::vector<hdr::RawFrame> frames;
+    for (int o = 0; o < 4; ++o) {
+        hdr::RawFrame f = make_frame(w, h, actual[o], 400.0, clip, 3.0, 50 + o, shutter[o]);
+        std::mt19937 rng(900 + o);
+        std::normal_distribution<double> nd(0.0, 1.0);
+        for (int y = oy0; y < oy0 + side; ++y) {
+            for (int x = obj_x(o); x < obj_x(o) + side; ++x) {
+                const int c = f.cfa.at(x, y);
+                double v = (scene(x, y, w, h) + obj) * chan_gain[c] * actual[o] * 400.0;
+                v += nd(rng) * std::sqrt(9.0 + std::max(0.0, v) * 0.5);
+                f.data[static_cast<std::size_t>(y) * w + x] = static_cast<float>(std::min<double>(v, clip));
+            }
+        }
+        frames.push_back(std::move(f));
+    }
+    const hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    // 物の四角の中の、合成の値と背景の値の差（物の明るさに対する割合）。
+    const auto excess = [&](const hdr::MergeResult& m, int x0) {
+        double sg = 0.0, sb = 0.0;
+        for (int y = oy0 + 4; y < oy0 + side - 4; ++y) {
+            for (int x = x0 + 4; x < x0 + side - 4; ++x) {
+                const int c = m.cfa.at(x, y);
+                const double unit = chan_gain[c] * actual[0] * 400.0 / clip;
+                sg += m.data[static_cast<std::size_t>(y) * w + x] - scene(x, y, w, h) * unit;
+                sb += obj * unit;
+            }
+        }
+        return sg / sb;
+    };
+    hdr::MergeOptions off;
+    off.deghost = false;
+    const hdr::MergeResult m0 = hdr::merge_frames(frames, plan, off);
+    hdr::MergeOptions on;
+    const hdr::MergeResult m1 = hdr::merge_frames(frames, plan, on);
+    int ref_o = 0;
+    for (int o = 0; o < 4; ++o) {
+        if (plan.order[o] == m1.reference) ref_o = o;
+    }
+    // 対策しないと、最も明るいフレームの位置に物が写る（この場面の暗い所は最も明るいフレームから来る）。
+    CHECK(excess(m0, obj_x(3)) > 0.5, "対策なしでゴーストが出ていない（テストの前提が崩れた）: %.2f", excess(m0, obj_x(3)));
+    for (int o = 0; o < 4; ++o) {
+        const double e = excess(m1, obj_x(o));
+        if (o == ref_o) {
+            CHECK(e > 0.85 && e < 1.15, "基準フレームの位置に物が写っていない: %.2f", e);
+        } else {
+            CHECK(std::fabs(e) < 0.15, "フレーム %d の位置にゴーストが残っている: %.2f", o, e);
+        }
+    }
+    CHECK(m1.ghost_regions >= 1 && m1.ghost_fraction > 0.0, "動いた所が見つかっていない");
+    // 動いた物から離れた所の重みは変わらない。
+    double far = 0.0;
+    for (int by = 0; by < m1.grid_h; ++by) {
+        for (int bx = 0; bx < m1.grid_w; ++bx) {
+            if (by * 2 > oy0 - 60 && by * 2 < oy0 + side + 60) continue;
+            const std::size_t i = static_cast<std::size_t>(by) * m1.grid_w + bx;
+            for (int o = 0; o < 4; ++o) far = std::max(far, static_cast<double>(std::fabs(m1.weights[o][i] - m0.weights[o][i])));
+        }
+    }
+    CHECK(far < 1e-6, "動いた物から離れた所の重みが変わった（最大 %g）", far);
+    // 重みの合計は 1 のまま。
+    double maxdev = 0.0;
+    for (std::size_t i = 0; i < m1.weights[0].size(); ++i) {
+        double s = 0.0;
+        for (const auto& wv : m1.weights) s += wv[i];
+        maxdev = std::max(maxdev, std::fabs(s - 1.0));
+    }
+    CHECK(maxdev < 1e-5, "重みの合計が 1 でない（最大のずれ %g）", maxdev);
+}
+
 // ---- 色補間（RCD） ----
 void test_demosaic() {
     std::printf("色補間（RCD）\n");
@@ -425,6 +507,7 @@ void test_alignment() {
 int main() {
     test_dng_roundtrip();
     test_merge_accuracy();
+    test_deghost();
     test_demosaic();
     test_alignment();
     std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
