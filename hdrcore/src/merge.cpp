@@ -69,6 +69,7 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
     const double tol = 0.20 - 0.16 * sens;
     // 区画ごとの平均（DN を相対露光量で割ったもの）・平均のノイズの分散・飽和しているか。
     std::vector<std::vector<float>> mean(n), var(n);
+    std::vector<double> fS(n), fO(n);  // フレームごとのノイズ（色の平均）
     std::vector<std::vector<uint8_t>> sat(n);
     for (int o = 0; o < n; ++o) {
         const int fi = plan.order[o];
@@ -84,6 +85,8 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
             O = 4.0;
         }
         const double e = plan.rel_exposure[o];
+        fS[o] = S;
+        fO[o] = O;
         mean[o].assign(ncell, 0.0f);
         var[o].assign(ncell, 0.0f);
         sat[o].assign(ncell, 0);
@@ -205,6 +208,13 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
         if (!region[i]) continue;
         int an = ref_o;
         while (an > 0 && sat[an][i]) --an;
+        // 手本のノイズが多すぎる（1 画素の相対ノイズが 15% を超える暗い所）なら、飽和しない限り明るいフレームを手本にする。
+        // 基準フレームのままだと、暗い海などで色のノイズのまだらになる。
+        const auto noisy = [&](int o) {
+            const double dn = static_cast<double>(mean[o][i]) * plan.rel_exposure[o];
+            return std::sqrt(fS[o] * std::max(0.0, dn) + fO[o]) > 0.15 * std::max(1e-9, dn);
+        };
+        while (an + 1 < n && !sat[an + 1][i] && noisy(an)) ++an;
         anchor[i] = static_cast<int8_t>(an);
         bool any = false;
         for (int o = 0; o < n; ++o) {
