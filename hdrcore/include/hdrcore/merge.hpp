@@ -36,6 +36,12 @@ struct MergeOptions {
     bool deghost = true;
     // 検出の感度（0〜1）。大きいほど小さな違いも動いたとみなす（そのぶん 1 枚だけを使う所が増え、ノイズが少し増える）。
     double ghost_sensitivity = 0.5;
+
+    // ---- 平均型の合成（ノイズを減らす） ----
+    // false: 各ブロックで白飛びしていない中で最も明るいフレームを使う（切り替え型）。
+    // true: 白飛びしていないフレームを、ノイズの分散の逆数で重みづけして平均する。暗部・中間調のノイズが減るが、
+    // フレームの位置がわずかにずれていると細部がぼける。動いた物はゴースト対策（deghost）で守る。
+    bool average = true;
 };
 
 struct MergeResult {
@@ -80,6 +86,10 @@ struct MergeResult {
     std::vector<int8_t> ghost_frame;
     int ghost_regions = 0;          // 動いた所（つながった領域）の数
     double ghost_fraction = 0.0;    // 1 枚に固定した面積の割合
+
+    // 平均型の合成で、最も明るいフレームだけを使う場合に比べたノイズの分散の比（暗い所の代表値。1 = 減っていない）。
+    // brightest_noise_dn にはこの比を掛けてある（NoiseProfile がノイズを多く見積もりすぎないように）。
+    double average_noise_ratio = 1.0;
 };
 
 // frames と plan は estimate_exposures() に渡したもの・返ってきたもの。

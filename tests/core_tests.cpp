@@ -217,6 +217,7 @@ void test_merge_accuracy() {
     }
 
     hdr::MergeOptions mo;
+    mo.average = false;  // 切り替え型の性質（余裕のある最も明るいフレームだけを使う）を下で確かめる
     const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);
     // 正解: 場面の明るさ × 色ごとの利得 × 最も暗いフレームの露光 × 400 / 飽和レベル
     const double chan_gain[3] = {0.6, 1.0, 0.8};
@@ -313,6 +314,36 @@ void test_merge_accuracy() {
         worst_col = std::max(worst_col, std::fabs(sg / st - 1.0));
     }
     CHECK(worst_col < 0.01, "列ごとの平均の誤差が大きい（最大 %.4f）", worst_col);
+
+    // 平均型の合成: 明るさは正解と揃ったまま、正解との差（ノイズ）が切り替え型より小さい。
+    {
+        hdr::MergeOptions avg;
+        avg.average = true;
+        const hdr::MergeResult ma = hdr::merge_frames(frames, plan, avg);
+        double es = 0.0, ea = 0.0, sg = 0.0, st = 0.0;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const int c = m.cfa.at(x, y);
+                const double truth = scene(x, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
+                if (truth >= 0.9 || truth < 1e-4) continue;
+                const std::size_t i = static_cast<std::size_t>(y) * w + x;
+                es += (m.data[i] - truth) * (m.data[i] - truth) / (truth * truth);
+                ea += (ma.data[i] - truth) * (ma.data[i] - truth) / (truth * truth);
+                sg += ma.data[i];
+                st += truth;
+            }
+        }
+        CHECK(ea < 0.95 * es, "平均型でノイズが減っていない（相対誤差の二乗和 %.4g → %.4g）", es, ea);
+        CHECK(std::fabs(sg / st - 1.0) < 0.005, "平均型で明るさがずれた（%.4f）", sg / st);
+        CHECK(ma.average_noise_ratio < 1.0, "平均型のノイズの比が 1 のまま");
+        double maxdev = 0.0;
+        for (std::size_t i = 0; i < ma.weights[0].size(); ++i) {
+            double s = 0.0;
+            for (const auto& wv : ma.weights) s += wv[i];
+            maxdev = std::max(maxdev, std::fabs(s - 1.0));
+        }
+        CHECK(maxdev < 1e-4, "平均型で重みの合計が 1 でない（最大のずれ %g）", maxdev);
+    }
 }
 
 // ---- ゴースト（動いた物）対策 ----

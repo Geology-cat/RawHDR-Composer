@@ -56,7 +56,7 @@ void box_blur(std::vector<float>& img, int w, int h, int r) {
 // level[o]: ブロックの明るさ（飽和の閾値に対する比、色をまたいだ最大）。order の順。
 // 結果は res.weights を書き換え、res.ghost_* に残す。
 void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const ExposurePlan& plan,
-             const std::vector<std::vector<float>>& level, const MergeOptions& opt, int ref_o) {
+             const std::vector<std::vector<float>>& level, const MergeOptions& opt, int ref_o, const std::vector<NoiseModel>& noise) {
     const int n = static_cast<int>(frames.size());
     const int b = res.block, gw = res.grid_w, gh = res.grid_h;
     const int G = 4;  // 区画の大きさ（ブロック）。Bayer で 8 画素四方
@@ -73,7 +73,7 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
     for (int o = 0; o < n; ++o) {
         const int fi = plan.order[o];
         const RawFrame& f = frames[fi];
-        const NoiseModel nm = estimate_noise(f, plan.clip[fi]);
+        const NoiseModel& nm = noise[o];
         double S = 0.0, O = 0.0;
         for (int c = 0; c < 3; ++c) {
             S += nm.S[c] / 3.0;
@@ -409,12 +409,111 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
         }
     }
     res.weights[0] = remaining;
+
+    // フレームごとのノイズ（order の順）。ゴースト対策と平均型の合成で使う。
+    std::vector<NoiseModel> noise(n);
+    if (opt.deghost || opt.average) {
+        for (int o = 0; o < n; ++o) noise[o] = estimate_noise(frames[plan.order[o]], plan.clip[plan.order[o]]);
+    }
+    const auto mean_noise = [&](int o, double& S, double& O) {
+        S = O = 0.0;
+        for (int c = 0; c < 3; ++c) {
+            S += noise[o].S[c] / 3.0;
+            O += noise[o].O[c] / 3.0;
+        }
+        if (!noise[o].valid) {
+            S = 1.0;
+            O = 4.0;
+        }
+    };
+    // ブロックの平均（DN、全色）。
+    const auto block_mean = [&](int o, std::vector<float>& out) {
+        const RawFrame& f = frames[plan.order[o]];
+        out.assign(cells, 0.0f);
+        parallel_for(gh, [&](int by0, int by1) {
+            for (int by = by0; by < by1; ++by) {
+                float* row_out = out.data() + static_cast<std::size_t>(by) * gw;
+                for (int y = by * b; y < std::min(res.height, (by + 1) * b); ++y) {
+                    const float* row = f.data.data() + static_cast<std::size_t>(y) * f.width;
+                    for (int x = 0; x < res.width; ++x) row_out[x / b] += row[x];
+                }
+                for (int bx = 0; bx < gw; ++bx) {
+                    const int ny = std::min(res.height, (by + 1) * b) - by * b, nx = std::min(res.width, (bx + 1) * b) - bx * b;
+                    row_out[bx] /= static_cast<float>(nx * ny);
+                }
+            }
+        });
+    };
+
+    // ---- 平均型の合成 ----
+    // 切り替え型の重み h（白飛びの手前で 0 へ下がる）を「使ってよい度合い」として残し、使ってよいフレームを
+    // 分散の逆数で重みづけして平均する。分散は、切り替え型の合成で見積もった明るさ x（最も暗いフレームの DN）での
+    // そのフレームのノイズ: (S·x·E + O) / E²。明るいフレームほど分散が小さいので重く、暗いフレームは暗部では
+    // 読み出しノイズが効いてほとんど重みを持たない。
+    if (opt.average && n >= 2) {
+        std::vector<float> x(cells, 0.0f), bm, total(cells, 0.0f), var_top(cells, 0.0f);
+        for (int o = 0; o < n; ++o) {
+            block_mean(o, bm);
+            const float e = static_cast<float>(plan.rel_exposure[o]);
+            const std::vector<float>& w = res.weights[o];
+            for (std::size_t i = 0; i < cells; ++i) x[i] += w[i] * bm[i] / e;
+        }
+        // 切り替え型で最も明るいフレームだけを使っていた所（暗い所）の目印。ノイズの減り方の代表値に使う。
+        std::vector<uint8_t> top_only(cells, 0);
+        for (std::size_t i = 0; i < cells; ++i) top_only[i] = res.weights[n - 1][i] > 0.999f ? 1 : 0;
+        for (int o = n - 1; o >= 0; --o) {
+            double S, O;
+            mean_noise(o, S, O);
+            const double e = plan.rel_exposure[o];
+            std::vector<float>& w = res.weights[o];
+            // 使ってよい度合い: 切り替え型と同じ h（隣の 1 ブロックまで含めた明るさで決める）。最も暗いフレームは常に 1。
+            const std::vector<float>& s = level[o];
+            parallel_for(gh, [&](int y0, int y1) {
+                for (int y = y0; y < y1; ++y) {
+                    for (int xb = 0; xb < gw; ++xb) {
+                        const std::size_t i = static_cast<std::size_t>(y) * gw + xb;
+                        float hi = 1.0f;
+                        if (o > 0) {
+                            float m = 0.0f;
+                            for (int dy = -1; dy <= 1; ++dy) {
+                                const int yy = std::min(gh - 1, std::max(0, y + dy));
+                                const float* row = s.data() + static_cast<std::size_t>(yy) * gw;
+                                for (int dx = -1; dx <= 1; ++dx) m = std::max(m, row[std::min(gw - 1, std::max(0, xb + dx))]);
+                            }
+                            const float t = std::min(1.0f, std::max(0.0f, (m - a) / (1.0f - a)));
+                            hi = m >= 1.0f ? 0.0f : 1.0f - t * t * (3.0f - 2.0f * t);
+                        }
+                        const double v = (S * std::max(0.0, static_cast<double>(x[i]) * e) + O) / (e * e);
+                        const float u = static_cast<float>(hi / std::max(1e-30, v));
+                        if (o == n - 1) var_top[i] = static_cast<float>(v);
+                        w[i] = u;
+                        total[i] += u;
+                    }
+                }
+            });
+        }
+        // 正規化。すべて 0（どのフレームも飽和の手前）なら最も暗いフレーム。
+        std::vector<float> ratio;
+        for (std::size_t i = 0; i < cells; ++i) {
+            if (total[i] > 0.0f) {
+                const float inv = 1.0f / total[i];
+                for (int o = 0; o < n; ++o) res.weights[o][i] *= inv;
+                if (top_only[i] && (i % 7) == 0) ratio.push_back(1.0f / (total[i] * var_top[i]));
+            } else {
+                for (int o = 0; o < n; ++o) res.weights[o][i] = o == 0 ? 1.0f : 0.0f;
+            }
+        }
+        if (!ratio.empty()) {
+            std::nth_element(ratio.begin(), ratio.begin() + ratio.size() / 2, ratio.end());
+            res.average_noise_ratio = std::min(1.0f, ratio[ratio.size() / 2]);
+        }
+    }
     res.reference = opt.reference >= 0 && opt.reference < n ? opt.reference : auto_reference(frames, plan);
     int ref_o = 0;
     for (int o = 0; o < n; ++o) {
         if (plan.order[o] == res.reference) ref_o = o;
     }
-    if (opt.deghost && n >= 2) deghost(res, frames, plan, level, opt, ref_o);
+    if (opt.deghost && n >= 2) deghost(res, frames, plan, level, opt, ref_o, noise);
 
     // ---- 合成 ----
     // 出力 = Σ w·v / (相対露光量 · 最も暗いフレームの飽和レベル)。
@@ -478,7 +577,12 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     res.reference_rel_exposure = eref;
     // 最も明るいフレーム（シャドウ・中間調はこれから来る）のノイズ。NoiseProfile と色補間に使う。
     res.brightest_rel_exposure = plan.rel_exposure[n - 1];
-    res.brightest_noise_dn = estimate_noise(frames[plan.order[n - 1]], plan.clip[plan.order[n - 1]]);
+    res.brightest_noise_dn = noise[n - 1].valid ? noise[n - 1] : estimate_noise(frames[plan.order[n - 1]], plan.clip[plan.order[n - 1]]);
+    // 平均型では暗部のノイズが減っているので、その分だけ小さく見積もる（NoiseProfile・色補間で使う）。
+    for (int c = 0; c < 3; ++c) {
+        res.brightest_noise_dn.S[c] *= res.average_noise_ratio;
+        res.brightest_noise_dn.O[c] *= res.average_noise_ratio;
+    }
     res.darkest_clip = l0;
     res.reference_ev_offset = std::log2(res.white_scale);
     return res;

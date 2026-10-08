@@ -286,6 +286,7 @@ const int kPreviewSize = 3200;
     NSSlider* _compressSlider;
     NSTextField* _compressLabel;
     NSButton* _deghostCheck;
+    NSButton* _averageCheck;
     NSSlider* _ghostSlider;
     NSTextField* _ghostLabel;
     NSTextField* _rampLabel;
@@ -585,6 +586,12 @@ const int kPreviewSize = 3200;
                                       value:defaults.ghost_sensitivity * 100.0
                                     tooltip:@"大きいほど、小さな違いも「動いた」とみなします。ゴーストが残るときは上げ、"
                                             @"動いていない所まで赤くなる（ノイズが増える）ときは下げます。50% が標準"];
+    _averageCheck = [NSButton checkboxWithTitle:@"複数のフレームを平均してノイズを減らす" target:self action:@selector(settingChanged:)];
+    [_averageCheck setState:defaults.average ? NSControlStateValueOn : NSControlStateValueOff];
+    [_averageCheck setToolTip:@"白飛びしていないフレームを、ノイズの少なさに応じた重みで平均します（平均型の合成）。"
+                              @"オフにすると、場所ごとに白飛びしていない中で最も明るいフレーム 1 枚を使います（切り替え型）。"
+                              @"露出の間隔が狭いほど効果が大きく、1⅔ 段刻みで暗部のノイズの分散がおよそ 3 割減ります。"
+                              @"手持ちで位置がわずかにずれている写真では細部が少しぼけることがあります"];
     _caCheck = [NSButton checkboxWithTitle:@"色の縁取り（倍率色収差）を補正" target:self action:@selector(settingChanged:)];
     [_caCheck setState:NSControlStateValueOn];
     [_caCheck setToolTip:@"レンズの倍率色収差（明るい物の縁の赤・緑・青の縁取り）を、合成の直後に R・B をわずかに拡大縮小して補正します。"
@@ -630,7 +637,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _deghostCheck, ghostRow, compressRow, _caCheck, _mergeButton,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _averageCheck, _deghostCheck, ghostRow, compressRow, _caCheck, _mergeButton,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -756,6 +763,7 @@ const int kPreviewSize = 3200;
     s.merge.safety = [_safetySlider doubleValue];
     s.merge.feather_px = static_cast<int>(std::lround([_featherSlider doubleValue]));
     s.merge.deghost = [_deghostCheck state] == NSControlStateValueOn;
+    s.merge.average = [_averageCheck state] == NSControlStateValueOn;
     s.merge.ghost_sensitivity = [_ghostSlider doubleValue] / 100.0;
     s.compress = [_compressSlider doubleValue] / 100.0;
     s.fix_ca = [_caCheck state] == NSControlStateValueOn;
@@ -1023,6 +1031,9 @@ const int kPreviewSize = 3200;
     [s appendFormat:@"  ※(差) = EXIF の名目値とのずれ\n  離れた組も %zu 組測って合わせた\n", _plan.wide_fits.size()];
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
+        if (_merged.average_noise_ratio < 1.0) {
+            [s appendFormat:@"平均型の合成: 暗部のノイズ %.0f%%（分散、1 枚のとき = 100%%）\n", _merged.average_noise_ratio * 100.0];
+        }
         if (!_merged.ghost_mask.empty()) {
             [s appendFormat:@"動いた所: %d か所、面積 %.2f%%\n", _merged.ghost_regions, _merged.ghost_fraction * 100.0];
         }
@@ -1568,6 +1579,7 @@ const int kPreviewSize = 3200;
             if ([p[0] isEqualToString:@"feather"]) [_featherSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"compress"]) [_compressSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"ghost"]) [_ghostSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"average"]) [_averageCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
             if ([p[0] isEqualToString:@"deghost"]) [_deghostCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
         }
         _autoChange = nil;
