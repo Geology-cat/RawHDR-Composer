@@ -24,6 +24,13 @@ struct ToneCompressOptions {
     // 0〜1。0 = 何もしない、0.5 = 下の目標どおりに縮める、1 = 目標をさらに厳しくする
     // （明るい所の knee −0.5 段・top −1 段、暗い所の knee +0.5 段・floor +2 段）。
     double strength = 0.0;
+    // 強さを場面の明暗差（大まかな明るさの幅）から自動で決める（strength は使わない）。
+    // 幅 8 段で 15%、14 段で 50%、22 段以上で 60%（その間は直線）。決めた値は結果の strength に入る。
+    bool auto_strength = false;
+    // 明るい所を抑える側・暗い所を持ち上げる側の強さの倍率（0〜2、1 = strength のまま）。
+    // 片側だけを強める・弱めるのに使う。どちらも 1 なら以前と同じ結果。
+    double highlight_amount = 1.0;
+    double shadow_amount = 1.0;
     // 白からの段。これより明るい所を縮める。Lightroom の標準のトーンカーブは白の 1 段下あたりから上を強く寝かせる
     // ので、最も明るい所（月の平均）はそれより下に置き、圧縮に使う幅も広めにとる（月と周りのにじみの差が残るように）。
     double highlight_knee = -3.0;
@@ -46,7 +53,11 @@ struct ToneCompressResult {
     double min_gain = 1.0, max_gain = 1.0;  // 掛けた倍率の範囲
     double before_span = 0.0, after_span = 0.0;  // 大まかな明るさの幅（段）
     double opening_ev = 0.0;  // 開いたときの明るさを整えた量（段。BaselineExposure に足す）
+    double strength = 0.0;    // 使った強さ（自動のときは決めた値）
 };
+
+// 自動のときの強さ（大まかな明るさの幅、段から）。
+double auto_tone_strength(double span_ev);
 
 // m.data に倍率を掛ける。倍率（ブロック単位）は m.gain に残す（色補間のノイズの見積もりに使う）。
 ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const ToneCompressOptions& options);

@@ -17,6 +17,7 @@
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
 #include "hdrcore/raw_frame.hpp"
+#include "hdrcore/tone_compress.hpp"
 #include "libraw/libraw.h"
 
 namespace {
@@ -343,6 +344,39 @@ void test_merge_accuracy() {
             maxdev = std::max(maxdev, std::fabs(s - 1.0));
         }
         CHECK(maxdev < 1e-4, "平均型で重みの合計が 1 でない（最大のずれ %g）", maxdev);
+    }
+
+    // 明暗差の圧縮: 片側の倍率を 0 にすると、その側は倍率 1 のまま。自動の強さは明るさの幅から決まる。
+    {
+        const double neutral[3] = {0.6, 1.0, 0.8};
+        const auto gain_range = [&](const hdr::ToneCompressOptions& to, double& gmin, double& gmax, double& used) {
+            hdr::MergeResult mc = m;
+            const hdr::ToneCompressResult r = hdr::compress_tone(mc, neutral, to);
+            gmin = 1e9;
+            gmax = 0.0;
+            for (float g : mc.gain) {
+                gmin = std::min(gmin, static_cast<double>(g));
+                gmax = std::max(gmax, static_cast<double>(g));
+            }
+            used = r.strength;
+            return r;
+        };
+        double gmin, gmax, used;
+        hdr::ToneCompressOptions to;
+        to.strength = 0.5;
+        to.shadow_amount = 0.0;
+        gain_range(to, gmin, gmax, used);
+        CHECK(gmax <= 1.0 + 1e-4 && gmin < 0.99, "暗い側 0%% なのに持ち上げている（倍率 %.3f〜%.3f）", gmin, gmax);
+        to.shadow_amount = 1.0;
+        to.highlight_amount = 0.0;
+        gain_range(to, gmin, gmax, used);
+        CHECK(gmin >= 1.0 - 1e-4, "明るい側 0%% なのに抑えている（倍率 %.3f〜%.3f）", gmin, gmax);
+        hdr::ToneCompressOptions au;
+        au.auto_strength = true;
+        const hdr::ToneCompressResult r = gain_range(au, gmin, gmax, used);
+        CHECK(std::fabs(used - hdr::auto_tone_strength(r.before_span)) < 1e-9 && used > 0.0, "自動の強さ %.3f（幅 %.1f 段）", used, r.before_span);
+        CHECK(std::fabs(hdr::auto_tone_strength(14.0) - 0.5) < 1e-9 && hdr::auto_tone_strength(30.0) <= 0.6 && hdr::auto_tone_strength(5.0) >= 0.1,
+              "自動の強さの対応が想定と違う");
     }
 }
 

@@ -8,6 +8,13 @@
 
 namespace hdr {
 
+double auto_tone_strength(double span) {
+    // 実写の 2 場面（幅 14.3 段・20.8 段）で、手で選んだ 50% 前後になるように合わせた。
+    if (span <= 8.0) return 0.15;
+    if (span <= 14.0) return 0.15 + (span - 8.0) / 6.0 * 0.35;
+    return std::min(0.6, 0.5 + (span - 14.0) / 8.0 * 0.1);
+}
+
 ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const ToneCompressOptions& opt) {
     ToneCompressResult res;
     m.gain.clear();
@@ -16,17 +23,8 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     m.max_gain = 1.0;
     m.opening_ev = 0.0;
     m.tone_strength = 0.0;
-    const double strength = std::min(1.0, std::max(0.0, opt.strength));
-    if (strength <= 0.0 || m.data.empty()) return res;
-    // 0〜50%: 下の目標（knee・top・floor）に向けて倍率を 0 から満額まで強める。
-    // 50〜100%: 倍率は満額のまま、目標そのものを厳しくする（明るい所をさらに下げ、暗い所をさらに持ち上げる）。
-    // 倍率を満額より大きくすると明るさの順序が入れ替わる（月が空より暗くなる）ので、目標の側で強める。
-    const double s = std::min(1.0, 2.0 * strength);
-    const double extra = std::max(0.0, 2.0 * strength - 1.0);
-    const double hk = opt.highlight_knee - 0.5 * extra;
-    const double highlight_top = opt.highlight_top - 1.0 * extra;
-    const double sk = opt.shadow_knee + 0.5 * extra;
-    const double shadow_floor = opt.shadow_floor + 2.0 * extra;
+    double strength = std::min(1.0, std::max(0.0, opt.strength));
+    if ((!opt.auto_strength && strength <= 0.0) || m.data.empty()) return res;
     const int b = m.block, gw = m.grid_w, gh = m.grid_h;
     const std::size_t cells = static_cast<std::size_t>(gw) * gh;
     // 基準フレームの白（合成の値の単位）。明るさはこれに対する段で扱う。
@@ -108,6 +106,21 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     std::nth_element(sorted.begin(), sorted.begin() + cells / 2, sorted.end());
     const float median = sorted[cells / 2];
     res.before_span = hi - lo;
+    if (opt.auto_strength) strength = auto_tone_strength(res.before_span);
+    // 0〜50%: 下の目標（knee・top・floor）に向けて倍率を 0 から満額まで強める。
+    // 50〜100%: 倍率は満額のまま、目標そのものを厳しくする（明るい所をさらに下げ、暗い所をさらに持ち上げる）。
+    // 倍率を満額より大きくすると明るさの順序が入れ替わる（月が空より暗くなる）ので、目標の側で強める。
+    // 明るい側・暗い側は、それぞれの倍率（highlight_amount・shadow_amount）を掛けた強さで別々に決める。
+    const double str_h = std::min(1.0, std::max(0.0, strength * opt.highlight_amount));
+    const double str_s = std::min(1.0, std::max(0.0, strength * opt.shadow_amount));
+    const double s_h = std::min(1.0, 2.0 * str_h), s_s = std::min(1.0, 2.0 * str_s);
+    const double extra_h = std::max(0.0, 2.0 * str_h - 1.0), extra_s = std::max(0.0, 2.0 * str_s - 1.0);
+    const double hk = opt.highlight_knee - 0.5 * extra_h;
+    const double highlight_top = opt.highlight_top - 1.0 * extra_h;
+    const double sk = opt.shadow_knee + 0.5 * extra_s;
+    const double shadow_floor = opt.shadow_floor + 2.0 * extra_s;
+    const double s = std::max(s_h, s_s);
+    res.strength = strength;
     // 開いたときの明るさを整える（白を shift 段だけ下げたことにする）。
     double shift = 0.0;
     if (opt.auto_brightness) {
@@ -140,10 +153,15 @@ ToneCompressResult compress_tone(MergeResult& m, const double neutral[3], const 
     double gmin = 1e9, gmax = 0.0;
     for (std::size_t i = 0; i < cells; ++i) {
         const double b0 = base[i] + shift;
-        double nb = b0;
-        if (b0 > hk) nb = hk + high(b0 - hk);
-        else if (b0 < sk) nb = sk - low(sk - b0);
-        const double g = std::exp2(s * (nb - b0));
+        double nb = b0, si = 0.0;
+        if (b0 > hk) {
+            nb = hk + high(b0 - hk);
+            si = s_h;
+        } else if (b0 < sk) {
+            nb = sk - low(sk - b0);
+            si = s_s;
+        }
+        const double g = std::exp2(si * (nb - b0));
         m.gain[i] = static_cast<float>(g);
         gmin = std::min(gmin, g);
         gmax = std::max(gmax, g);

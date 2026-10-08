@@ -15,6 +15,9 @@
 //   --no-deghost          動いた物のゴースト対策をしない（既定はする）
 //   --ghost S             ゴーストの検出の感度（0〜1、既定 0.5）。大きいほど小さな違いも動いたとみなす
 //   --compress S          明暗差の圧縮の強さ（0〜1、既定 0 = しない、0.5 = 標準、1 = 最大）。月などを抑え、暗部を持ち上げる倍率をデータに焼き込む
+//                         auto なら場面の明暗差から決める
+//   --highlight X         明るい所を抑える側の強さの倍率（0〜2、既定 1）
+//   --shadow X            暗い所を持ち上げる側の強さの倍率（0〜2、既定 1）
 //   --no-ca               倍率色収差（月の縁の赤・緑の縁取り）を補正しない
 //   --format F            出力形式: auto（既定）・cfa・linear（LinearRaw = 色補間済み）
 //   --no-compress         DNG を圧縮しない
@@ -54,7 +57,7 @@ void usage() {
                  "使い方:\n"
                  "  rawhdr info  RAW...\n"
                  "  rawhdr merge [-o OUT.dng] [--ref N] [--format auto|cfa|linear] [--ramp X] [--feather PX] [--safety X] [--no-compress]\n"
-                 "               [--no-average] [--no-deghost] [--ghost S] [--compress S] [--align] [--no-ca]\n"
+                 "               [--no-average] [--no-deghost] [--ghost S] [--compress S|auto] [--highlight X] [--shadow X] [--align] [--no-ca]\n"
                  "               [--lens-xmp] [--baseline EV] [--debug DIR] RAW...\n");
 }
 
@@ -171,7 +174,16 @@ int cmd_merge(int argc, char** argv) {
         } else if (a == "--no-adobe") {
             use_adobe = false;
         } else if (a == "--compress") {
-            compress.strength = std::atof(next().c_str());
+            const std::string v = next();
+            if (v == "auto") {
+                compress.auto_strength = true;
+            } else {
+                compress.strength = std::atof(v.c_str());
+            }
+        } else if (a == "--highlight") {
+            compress.highlight_amount = std::atof(next().c_str());
+        } else if (a == "--shadow") {
+            compress.shadow_amount = std::atof(next().c_str());
         } else if (a == "--no-average") {
             mo.average = false;
         } else if (a == "--no-deghost") {
@@ -296,10 +308,10 @@ int cmd_merge(int argc, char** argv) {
             std::printf("倍率色収差の補正: しない（%s）\n", ca.note.c_str());
         }
     }
-    if (compress.strength > 0.0) {
+    if (compress.strength > 0.0 || compress.auto_strength) {
         const hdr::ToneCompressResult tc = hdr::compress_tone(m, frames[m.reference].as_shot_neutral, compress);
-        std::printf("明暗差の圧縮: 強さ %.2f  倍率 %+.1f〜%+.1f 段  大まかな明るさの幅 %.1f 段 → %.1f 段  開いたときの明るさ %+.1f 段\n",
-                    compress.strength, std::log2(tc.min_gain), std::log2(tc.max_gain), tc.before_span, tc.after_span, tc.opening_ev);
+        std::printf("明暗差の圧縮: 強さ %.2f%s（明るい側 ×%.2f・暗い側 ×%.2f）  倍率 %+.1f〜%+.1f 段  大まかな明るさの幅 %.1f 段 → %.1f 段  開いたときの明るさ %+.1f 段\n",
+                    tc.strength, compress.auto_strength ? "（自動）" : "", compress.highlight_amount, compress.shadow_amount, std::log2(tc.min_gain), std::log2(tc.max_gain), tc.before_span, tc.after_span, tc.opening_ev);
     }
     // 明暗差を圧縮したときは、自動なら LinearRaw にする（倍率が輪郭で急に変わるので、CFA のまま
     // Camera Raw に色補間させると縁に色の縞が出る。LinearRaw では倍率を外して色補間してから掛け直す）。

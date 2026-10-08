@@ -174,6 +174,9 @@ hdr::Rgb8Image ghost_image(const hdr::Rgb8Image& base, const hdr::MergeResult& m
 struct Settings {
     hdr::MergeOptions merge;
     double compress = 0.5;  // 明暗差の圧縮の強さ（0〜1）
+    bool compress_auto = false;     // 強さを場面の明暗差から決める
+    double highlight_amount = 1.0;  // 明るい側・暗い側の強さの倍率（0〜2）
+    double shadow_amount = 1.0;
     bool fix_ca = true;     // 倍率色収差を補正する
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
     NSInteger align = kAlignModeNone;
@@ -287,6 +290,12 @@ const int kPreviewSize = 3200;
     NSTextField* _compressLabel;
     NSButton* _deghostCheck;
     NSButton* _averageCheck;
+    NSButton* _compressAutoCheck;
+    NSSlider* _highlightSlider;
+    NSSlider* _shadowSlider;
+    NSTextField* _highlightLabel;
+    NSTextField* _shadowLabel;
+    double _autoStrengthUsed;  // 自動で決めた強さ（_queue の上で書く）
     NSSlider* _ghostSlider;
     NSTextField* _ghostLabel;
     NSTextField* _rampLabel;
@@ -572,6 +581,26 @@ const int kPreviewSize = 3200;
                                        tooltip:@"月や光源を抑え、暗部を持ち上げる「覆い焼き・焼き込み」の倍率を、輪郭に沿ってデータに焼き込みます。"
                                                @"開いたときの明るさも整えるので、Lightroom の露光量を動かさずに、シャドウ・ハイライトのスライダーだけで"
                                                @"仕上げられる幅に収まります。50% が標準、100% で最も強く縮めます。0% なら純粋な線形の HDR のまま（局所的な明るさの関係を変えない）"];
+    _compressAutoCheck = [NSButton checkboxWithTitle:@"強さを場面に合わせて自動で決める" target:self action:@selector(settingChanged:)];
+    [_compressAutoCheck setState:NSControlStateValueOff];
+    [_compressAutoCheck setToolTip:@"場面の明暗差（大まかな明るさの幅）から強さを決めます。幅 8 段で 15%、14 段で 50%、22 段以上で 60%。"
+                                   @"決めた値は合成のあとスライダーに表示します"];
+    NSStackView* highlightRow = [self sliderRow:@"　明るい所を抑える"
+                                         slider:&_highlightSlider
+                                          label:&_highlightLabel
+                                            min:0
+                                            max:200
+                                          value:100
+                                        tooltip:@"明暗差の圧縮のうち、月・光源など明るい所を抑える側の強さ（上の強さに対する割合）。"
+                                                @"100% が標準。0% にすると明るい所は抑えません"];
+    NSStackView* shadowRow = [self sliderRow:@"　暗い所を持ち上げる"
+                                      slider:&_shadowSlider
+                                       label:&_shadowLabel
+                                         min:0
+                                         max:200
+                                       value:100
+                                     tooltip:@"明暗差の圧縮のうち、暗い所を持ち上げる側の強さ（上の強さに対する割合）。"
+                                             @"100% が標準。持ち上げた暗部のノイズが気になるときは下げます"];
     _deghostCheck = [NSButton checkboxWithTitle:@"動いた物のゴーストを取り除く" target:self action:@selector(settingChanged:)];
     [_deghostCheck setState:defaults.deghost ? NSControlStateValueOn : NSControlStateValueOff];
     [_deghostCheck setToolTip:@"撮影の間に動いた物（人・車・枝・波・雲・光の筋など）が二重や半透明に写るのを防ぎます。"
@@ -637,7 +666,7 @@ const int kPreviewSize = 3200;
     NSStackView* right = [NSStackView stackViewWithViews:@[
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
-        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _averageCheck, _deghostCheck, ghostRow, compressRow, _caCheck, _mergeButton,
+        [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _averageCheck, _deghostCheck, ghostRow, compressRow, _compressAutoCheck, highlightRow, shadowRow, _caCheck, _mergeButton,
         [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
@@ -645,7 +674,7 @@ const int kPreviewSize = 3200;
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, ghostRow, compressRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, ghostRow, compressRow, highlightRow, shadowRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
     [right setCustomSpacing:10 afterView:_caCheck];
@@ -752,6 +781,11 @@ const int kPreviewSize = 3200;
     [_featherLabel setStringValue:[NSString stringWithFormat:@"%.0f px", [_featherSlider doubleValue]]];
     [_compressLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_compressSlider doubleValue]]];
     [_ghostLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_ghostSlider doubleValue]]];
+    [_highlightLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_highlightSlider doubleValue]]];
+    [_shadowLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [_shadowSlider doubleValue]]];
+    const BOOL autoStrength = [_compressAutoCheck state] == NSControlStateValueOn;
+    [_compressSlider setEnabled:!autoStrength];
+    if (autoStrength) [_compressLabel setStringValue:[_compressLabel.stringValue stringByAppendingString:@" 自動"]];
     [_ghostSlider setEnabled:[_deghostCheck state] == NSControlStateValueOn];
     const double ev = std::round([_evSlider doubleValue] * 2.0) / 2.0;
     [_evLabel setStringValue:[NSString stringWithFormat:@"表示 %@%.1f EV", ev > 0 ? @"+" : (ev < 0 ? @"" : @"±"), ev]];
@@ -766,6 +800,9 @@ const int kPreviewSize = 3200;
     s.merge.average = [_averageCheck state] == NSControlStateValueOn;
     s.merge.ghost_sensitivity = [_ghostSlider doubleValue] / 100.0;
     s.compress = [_compressSlider doubleValue] / 100.0;
+    s.compress_auto = [_compressAutoCheck state] == NSControlStateValueOn;
+    s.highlight_amount = [_highlightSlider doubleValue] / 100.0;
+    s.shadow_amount = [_shadowSlider doubleValue] / 100.0;
     s.fix_ca = [_caCheck state] == NSControlStateValueOn;
     s.reference = static_cast<int>([_refPopup indexOfSelectedItem]) - 1;  // 先頭は「自動」
     s.align = [_alignPopup indexOfSelectedItem];
@@ -1046,7 +1083,8 @@ const int kPreviewSize = 3200;
                 gmin = std::min(gmin, g);
                 gmax = std::max(gmax, g);
             }
-            [s appendFormat:@"明暗差の圧縮: 倍率 %+.1f〜%+.1f 段\n開いたときの明るさ %+.1f 段\n", std::log2(gmin), std::log2(gmax), _merged.opening_ev];
+            [s appendFormat:@"明暗差の圧縮: 強さ %.0f%%、倍率 %+.1f〜%+.1f 段\n開いたときの明るさ %+.1f 段\n", _merged.tone_strength * 100.0, std::log2(gmin),
+                            std::log2(gmax), _merged.opening_ev];
         }
         [s appendFormat:@"最も暗いフレームでも飽和: %.3f%%\n", _merged.clipped_fraction * 100.0];
         [s appendString:@"\n使った割合（面積）\n"];
@@ -1194,10 +1232,15 @@ const int kPreviewSize = 3200;
                 self->_lateralCa = hdr::estimate_lateral_ca(self->_merged);
                 hdr::apply_lateral_ca(self->_merged, self->_lateralCa);
             }
-            if (settings.compress > 0.0) {
+            self->_autoStrengthUsed = -1.0;
+            if (settings.compress > 0.0 || settings.compress_auto) {
                 hdr::ToneCompressOptions to;
                 to.strength = settings.compress;
-                hdr::compress_tone(self->_merged, self->_frames[self->_merged.reference].as_shot_neutral, to);
+                to.auto_strength = settings.compress_auto;
+                to.highlight_amount = settings.highlight_amount;
+                to.shadow_amount = settings.shadow_amount;
+                const hdr::ToneCompressResult tc = hdr::compress_tone(self->_merged, self->_frames[self->_merged.reference].as_shot_neutral, to);
+                if (settings.compress_auto) self->_autoStrengthUsed = tc.strength;
             }
             self->_hasMerged = true;
             self->_autoFormat = hdr::decide_output_format(self->_merged, hdr::OutputFormat::Auto);
@@ -1231,12 +1274,18 @@ const int kPreviewSize = 3200;
         NSString* info = [self infoTextOnQueue];
         const bool merged = self->_hasMerged;
         const hdr::FormatDecision fd = self->_autoFormat;
+        const double autoStrength = self->_autoStrengthUsed;
         NSString* refPath = merged ? ns(self->_frames[self->_merged.reference].path) : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_rows = rows;
             self->_uiHasMerged = merged;
             self->_uiAutoFormat = fd;
             self->_uiReferencePath = refPath;
+            if (merged && autoStrength >= 0.0) {
+                // 自動で決めた強さをスライダーに出す（値を変えても設定の変更にはしない）。
+                [self->_compressSlider setDoubleValue:autoStrength * 100.0];
+                [self refreshSettingLabels];
+            }
             if (merged) {
                 self->_uiEverMerged = YES;
                 self->_mergedGeneration = settingsGen;
@@ -1579,6 +1628,9 @@ const int kPreviewSize = 3200;
             if ([p[0] isEqualToString:@"feather"]) [_featherSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"compress"]) [_compressSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"ghost"]) [_ghostSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"compress_auto"]) [_compressAutoCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
+            if ([p[0] isEqualToString:@"highlight"]) [_highlightSlider setDoubleValue:v];
+            if ([p[0] isEqualToString:@"shadow"]) [_shadowSlider setDoubleValue:v];
             if ([p[0] isEqualToString:@"average"]) [_averageCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
             if ([p[0] isEqualToString:@"deghost"]) [_deghostCheck setState:v != 0.0 ? NSControlStateValueOn : NSControlStateValueOff];
         }
