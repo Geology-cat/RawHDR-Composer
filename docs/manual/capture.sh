@@ -1,6 +1,7 @@
 #!/bin/bash
 # 使用説明書のスクリーンショットを撮る（開発版のアプリの検証用の自動操作を使う）。
 # 撮った PNG は fig/raw/（リポジトリには入れない）。説明書で使う JPEG・切り抜きはそこから作る。
+# 撮った後は python3 docs/manual/make_figs.py で、説明書の図（縮小・切り抜き）を作る。
 # ダイアログ（Adobe DNG Converter の案内・保存・開く）は screencapture -l で手で撮った。
 #   docs/manual/capture.sh
 set -uo pipefail
@@ -27,3 +28,5 @@ shot 09_align RBH_OPEN="$LH" RBH_ALIGN=2 RBH_VIEW=4 RBH_SELECT=1
 shot 10_lighthouse RBH_OPEN="$LH" RBH_VIEW=0
 shot 11_lh_sourcemap RBH_OPEN="$LH" RBH_VIEW=2
 shot 12_lh_overlay RBH_OPEN="$LH" RBH_VIEW=1
+shot 18_lh_ghost RBH_OPEN="$LH" RBH_VIEW=6
+shot 19_info RBH_OPEN="$COL" RBH_SCROLL_RIGHT=1

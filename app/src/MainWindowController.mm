@@ -62,6 +62,16 @@
 }
 @end
 
+// 上から並べる（スクロールしたときに上端がそろう）クリップビュー。
+@interface FlippedClipView : NSClipView
+@end
+
+@implementation FlippedClipView
+- (BOOL)isFlipped {
+    return YES;
+}
+@end
+
 // ---- 補助 --------------------------------------------------------------------------------
 
 namespace {
@@ -309,6 +319,9 @@ const int kPreviewSize = 3200;
     NSButton* _mergeButton;
     NSTextField* _zoomLabel;
     NSTextView* _infoView;
+    NSLayoutConstraint* _infoHeight;
+    NSScrollView* _rightScroll;
+    BOOL _scrollRightPending;
     NSProgressIndicator* _progress;
     NSTextField* _status;
     NSArray<FrameRow*>* _rows;
@@ -684,6 +697,27 @@ const int kPreviewSize = 3200;
     [right setCustomSpacing:14 afterView:_alignNote];
     [right setCustomSpacing:14 afterView:_exportButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    _infoHeight = [[infoScroll heightAnchor] constraintGreaterThanOrEqualToConstant:220];
+    _infoHeight.active = YES;
+    // 右の欄は縦にスクロールできるようにする（設定が多いので、ウインドウが低いと収まらない）。
+    // 高さに余裕があるときは、余りを「解析の結果」に回す。
+    NSScrollView* rightScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    FlippedClipView* rightClip = [[FlippedClipView alloc] initWithFrame:NSZeroRect];
+    [rightClip setDrawsBackground:NO];
+    [rightScroll setContentView:rightClip];
+    [rightScroll setHasVerticalScroller:YES];
+    [rightScroll setAutohidesScrollers:YES];
+    [rightScroll setDrawsBackground:NO];
+    [rightScroll setBorderType:NSNoBorder];
+    [right setTranslatesAutoresizingMaskIntoConstraints:NO];
+    [rightScroll setDocumentView:right];
+    _rightScroll = rightScroll;
+    [NSLayoutConstraint activateConstraints:@[
+        [[right topAnchor] constraintEqualToAnchor:[rightClip topAnchor]],
+        [[right leadingAnchor] constraintEqualToAnchor:[rightClip leadingAnchor]],
+        [[right widthAnchor] constraintEqualToAnchor:[rightClip widthAnchor]],
+        [[right heightAnchor] constraintGreaterThanOrEqualToAnchor:[rightClip heightAnchor]],
+    ]];
 
     // ---- 下: 状態 ----
     _progress = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
@@ -697,7 +731,7 @@ const int kPreviewSize = 3200;
     [statusBar setSpacing:8];
     [statusBar setEdgeInsets:NSEdgeInsetsMake(4, 12, 6, 12)];
 
-    for (NSView* v in @[ left, center, right, statusBar ]) {
+    for (NSView* v in @[ left, center, rightScroll, statusBar ]) {
         [v setTranslatesAutoresizingMaskIntoConstraints:NO];
         [root addSubview:v];
     }
@@ -709,11 +743,11 @@ const int kPreviewSize = 3200;
         [[center leadingAnchor] constraintEqualToAnchor:[left trailingAnchor]],
         [[center topAnchor] constraintEqualToAnchor:[root topAnchor]],
         [[center bottomAnchor] constraintEqualToAnchor:[statusBar topAnchor]],
-        [[right leadingAnchor] constraintEqualToAnchor:[center trailingAnchor]],
-        [[right trailingAnchor] constraintEqualToAnchor:[root trailingAnchor]],
-        [[right topAnchor] constraintEqualToAnchor:[root topAnchor]],
-        [[right bottomAnchor] constraintEqualToAnchor:[statusBar topAnchor]],
-        [[right widthAnchor] constraintEqualToConstant:300],
+        [[rightScroll leadingAnchor] constraintEqualToAnchor:[center trailingAnchor]],
+        [[rightScroll trailingAnchor] constraintEqualToAnchor:[root trailingAnchor]],
+        [[rightScroll topAnchor] constraintEqualToAnchor:[root topAnchor]],
+        [[rightScroll bottomAnchor] constraintEqualToAnchor:[statusBar topAnchor]],
+        [[rightScroll widthAnchor] constraintEqualToConstant:300],
         [[statusBar leadingAnchor] constraintEqualToAnchor:[root leadingAnchor]],
         [[statusBar trailingAnchor] constraintEqualToAnchor:[root trailingAnchor]],
         [[statusBar bottomAnchor] constraintEqualToAnchor:[root bottomAnchor]],
@@ -1085,7 +1119,7 @@ const int kPreviewSize = 3200;
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
         if (_merged.average_noise_ratio < 1.0) {
-            [s appendFormat:@"平均型の合成: 暗部のノイズ %.0f%%（分散、1 枚のとき = 100%%）\n", _merged.average_noise_ratio * 100.0];
+            [s appendFormat:@"平均型の合成: 暗部のノイズの分散\n %.0f%%（1 枚だけのとき = 100%%）\n", _merged.average_noise_ratio * 100.0];
         }
         if (!_merged.ghost_mask.empty()) {
             [s appendFormat:@"動いた所: %d か所、面積 %.2f%%\n", _merged.ghost_regions, _merged.ghost_fraction * 100.0];
@@ -1619,6 +1653,11 @@ const int kPreviewSize = 3200;
     if (snap) _snapshotPath = [NSString stringWithUTF8String:snap];
     if (exportPath) _autoExportPath = [NSString stringWithUTF8String:exportPath];
     if (const char* ch = getenv("RBH_CHANGE")) _autoChange = [NSString stringWithUTF8String:ch];
+    if (getenv("RBH_SCROLL_RIGHT")) {
+        // 検証用: 「解析の結果」を高くして、右の欄を一番下まで送った状態を撮る（説明書の図）。
+        _infoHeight.constant = 760;
+        _scrollRightPending = YES;
+    }
     if (mode) [_modeControl setSelectedSegment:atoi(mode)];
     if (const char* al = getenv("RBH_ALIGN")) {
         [_alignPopup selectItemAtIndex:atoi(al)];
@@ -1675,6 +1714,13 @@ const int kPreviewSize = 3200;
         return;
     }
     _automationPending = NO;
+    if (_scrollRightPending) {
+        [[[self window] contentView] layoutSubtreeIfNeeded];
+        NSClipView* clip = [_rightScroll contentView];
+        const CGFloat y = std::max<CGFloat>(0.0, NSHeight([[_rightScroll documentView] frame]) - NSHeight([clip bounds]));
+        [clip scrollToPoint:NSMakePoint(0, y)];
+        [_rightScroll reflectScrolledClipView:clip];
+    }
     if (_snapshotPath) {
         // ウインドウの枠を含めずに中身を描く。cacheDisplayInRect では文字が描かれないことがあるので、
         // ビットマップの文脈へ直接描く。
