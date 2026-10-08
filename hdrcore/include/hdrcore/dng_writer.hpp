@@ -50,6 +50,10 @@ struct DngWriteOptions {
     uint32_t white_level = 0;
 };
 
+// DNG を開いたときの明るさ（BaselineExposure のうち、値の倍率の分を除いたもの。段）。プレビューも同じ明るさで描く。
+// テンプレートがあれば Adobe の基準（機種の BaselineExposure と白レベル）、無ければ camera_baseline と基準フレームの白。
+double dng_baseline_ev(const MergeResult& merged, const DngTemplate* adobe_template, double camera_baseline);
+
 void write_dng(const std::string& path, const MergeResult& merged, const std::vector<RawFrame>& frames,
                const ExposurePlan& plan, const DngWriteOptions& options = {});
 

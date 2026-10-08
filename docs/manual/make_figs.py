@@ -15,7 +15,7 @@ FULL = ["01_empty", "02_loaded", "03_before_merge", "04_merged", "05_overlay", "
         "08_diff", "09_align", "10_lighthouse", "11_lh_sourcemap", "12_lh_overlay", "18_lh_ghost"]
 
 # 名前: (元の画面, (左, 上, 右, 下))
-RIGHT = (2748, 0, 3360, 1545)  # 右の欄（基準フレーム〜DNG を書き出す）
+RIGHT = (2748, 0, 3360, 1620)  # 右の欄（基準フレーム〜DNG を書き出す）
 CROPS = {
     "c_right_merged": ("04_merged", RIGHT),
     "c_right_align": ("09_align", (2748, 0, 3360, 560)),  # 右の欄の上（位置合わせまで）

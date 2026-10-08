@@ -13,6 +13,7 @@
 #include "hdrcore/output_format.hpp"
 #include "hdrcore/exposure.hpp"
 #include "hdrcore/merge.hpp"
+#include "hdrcore/merged_rgb.hpp"
 #include "hdrcore/preview.hpp"
 #include "hdrcore/raw_frame.hpp"
 #include "hdrcore/lateral_ca.hpp"
@@ -189,7 +190,7 @@ struct Settings {
     double shadow_amount = 1.0;
     bool fix_ca = true;     // 倍率色収差を補正する
     int reference = -1;  // 並べ替えた後のフレームの番号。-1 = 自動
-    NSInteger align = kAlignModeNone;
+    NSInteger align = kAlignModeAuto;
 };
 
 // 2つの線形の色の違い（明るさの比の対数の大きさ。暗すぎる所は比べない）。
@@ -545,6 +546,7 @@ const int kPreviewSize = 3200;
     [_refPopup setToolTip:@"DNG はこのフレームと同じ明るさ・メタデータ（撮影情報・レンズ）で開きます"];
     _alignPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [_alignPopup addItemsWithTitles:@[ @"しない（三脚）", @"自動", @"手動（自動の結果を微調整）" ]];
+    [_alignPopup selectItemAtIndex:kAlignModeAuto];  // 既定は自動（三脚でも、ずれが無ければ何も動かさない）
     [_alignPopup setTarget:self];
     [_alignPopup setAction:@selector(alignChanged:)];
     [_alignPopup setToolTip:@"他のフレームを基準フレームに合わせます（平行移動・回転・1 画素未満のずれ）。"
@@ -644,9 +646,9 @@ const int kPreviewSize = 3200;
     [_mergeButton setToolTip:@"読み込んだフレームを今の設定で合成します（⌘R）。設定を変えたら「再結合する」で合成し直します"];
     [_mergeButton setFont:[NSFont boldSystemFontOfSize:13]];
     _lensXmpCheck = [NSButton checkboxWithTitle:@"レンズ補正を有効にして開く" target:nil action:nil];
-    [_lensXmpCheck setState:NSControlStateValueOff];
-    [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れます。"
-                              @"入れると Camera Raw はユーザーの既定の現像設定（プロファイルなど）を使わなくなるので、既定ではオフです。"
+    [_lensXmpCheck setState:NSControlStateValueOn];
+    [_lensXmpCheck setToolTip:@"DNG の XMP にレンズプロファイル補正の設定を入れ、開いたときからレンズ補正（歪み・周辺光量）が効いた状態にします（既定でオン）。"
+                              @"入れると Camera Raw はユーザーの既定の現像設定（プロファイルなど）を使わなくなります。自分の既定の設定で開きたいときはオフにします。"
                               @"オフでもレンズは EXIF から認識され、Lightroom でプロファイル補正を選べます"];
 
     _formatPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -782,7 +784,7 @@ const int kPreviewSize = 3200;
     const BOOL current = [self resultIsCurrent];
     // 書き出すのは、今の設定で合成した結果だけ（設定を変えたら再結合するまで書き出さない）。
     [_exportButton setEnabled:enough && current && _busyCount == 0];
-    NSString* title = !_uiEverMerged ? @"HDR結合開始" : (current ? @"結合済み" : @"再結合する");
+    NSString* title = !_uiEverMerged ? @"HDR結合開始" : (current ? @"結合済み" : @"再結合中…");
     [_mergeButton setTitle:title];
     [_mergeButton setEnabled:enough && !current && _busyCount == 0];
     // 次にすべき操作のボタンを既定（青、Return キー）にする: 合成前・設定変更後は結合、合成後は書き出し。
@@ -792,11 +794,14 @@ const int kPreviewSize = 3200;
 }
 
 // 合成に効く設定・フレームが変わった（合成結果は古くなる）。
+// 一度合成した後は、設定を変えたら少し待ってから自動で合成し直す（スライダーを動かしている間は待つ）。
+// 最初の合成だけは「HDR結合開始」で始める（読み込んだ直後に設定を確かめられるように）。
 - (void)markSettingsChanged {
     ++_settingsGeneration;
     [self updateControls];
-    if (_uiEverMerged && _rows.count >= 2 && _busyCount == 0) {
-        [_status setStringValue:@"設定が変わりました。「再結合する」で合成し直します"];
+    if (_uiEverMerged && _rows.count >= 2) {
+        [_status setStringValue:@"設定が変わりました。合成し直しています…"];
+        [self scheduleMerge:YES];
     }
 }
 
@@ -979,6 +984,7 @@ const int kPreviewSize = 3200;
 
 - (void)clearFrames:(id)sender {
     (void)sender;
+    _uiEverMerged = NO;  // 別の写真を読み込むときは、また「HDR結合開始」から
     const Settings settings = [self currentSettings];
     dispatch_async(_queue, ^{
         self->_frames.clear();
@@ -1048,6 +1054,10 @@ const int kPreviewSize = 3200;
                     [self->_table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(atoi(sel))] byExtendingSelection:NO];
                 }
                 if (!getenv("RBH_NO_MERGE")) [self scheduleMerge:NO];  // 続けて合成する
+            } else if (self->_uiEverMerged) {
+                // 合成した後にフレームを足した・外したときは、自動で合成し直す。
+                [self->_status setStringValue:@"フレームが変わりました。合成し直しています…"];
+                [self scheduleMerge:YES];
             }
         }
     });
@@ -1262,7 +1272,7 @@ const int kPreviewSize = 3200;
 - (void)scheduleMerge:(BOOL)debounce {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(runMerge) object:nil];
     if (debounce) {
-        [self performSelector:@selector(runMerge) withObject:nil afterDelay:0.35];
+        [self performSelector:@selector(runMerge) withObject:nil afterDelay:0.6];
     } else {
         [self runMerge];
     }
@@ -1307,10 +1317,27 @@ const int kPreviewSize = 3200;
             // 前回の設定の結果と比べる（設定が効いている所を示すため）。
             const hdr::MergeResult& m = self->_merged;
             const hdr::RawFrame& ref = self->_frames[m.reference];
+            // プレビューは、書き出す DNG を Camera Raw で開いたときに近づける:
+            // - 明るさは DNG の BaselineExposure と同じ（Adobe DNG Converter があれば Adobe の基準で。基準フレームごとに 1 回変換）
+            // - 画素は LinearRaw と同じもの（色補間してから、圧縮の倍率を画素ごとに配り直したもの）
+            // - トーンカーブは Camera Raw の既定の見え方に近いもの（描くときに掛ける）
+            if (!self->_converter.empty() && self->_templateFor != ref.path) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self->_status setStringValue:@"Adobe DNG Converter で基準フレームを変換中…"];
+                });
+                self->_template = hdr::make_dng_template(ref.path, self->_converter);
+                self->_templateFor = ref.path;
+            }
+            const hdr::DngTemplate* tmpl = !self->_converter.empty() && self->_template.valid ? &self->_template : nullptr;
             hdr::PreviewOptions lo;
             lo.max_size = kPreviewSize;
-            lo.exposure_ev = m.reference_ev_offset + m.opening_ev;
-            hdr::RgbFloatImage lin = hdr::render_preview_linear(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, lo);
+            lo.exposure_ev = hdr::dng_baseline_ev(m, tmpl, 0.0);
+            hdr::RgbFloatImage lin;
+            {
+                const float ped = hdr::preview_pedestal(m);
+                const std::vector<float> rgb = hdr::merged_camera_rgb(m, ped);
+                lin = hdr::camera_rgb_preview(rgb.data(), m.width, m.height, ped, m.cfa, ref.color_matrix, ref.as_shot_neutral, lo);
+            }
             if (self->_curLinear.width == lin.width && self->_curLinear.height == lin.height && !lin.rgb.empty()) {
                 self->_prevLinear = std::move(self->_curLinear);
                 double changed = 0.0, worst = 0.0;
@@ -1416,24 +1443,28 @@ const int kPreviewSize = 3200;
         } else {
             if (!self->_hasMerged) return;
             const hdr::MergeResult& m = self->_merged;
+            // 合成結果の線形のプレビュー（DNG を開いたときの明るさ）に、表示の明るさを掛けて仕上げる。
+            // 明暗差を圧縮したとき・「ハイライトを見やすく」がオフのときは Camera Raw に近いトーンカーブで描く。
+            // 圧縮していないときの「ハイライトを見やすく」は、局所トーンマッピング（表示だけの見やすさ）。
+            const auto finish = [&](hdr::PreviewOptions o) {
+                hdr::RgbFloatImage lin = self->_curLinear;
+                const float k = static_cast<float>(std::exp2(ev));
+                for (float& v : lin.rgb) v *= k;
+                o.local_tone = o.local_tone && m.gain.empty();
+                o.acr_curve = !o.local_tone;
+                return hdr::finish_preview(std::move(lin), o);
+            };
             if (mode == kViewChange) {
+                po.acr_curve = true;
+                po.local_tone = false;
                 img = change_image(self->_curLinear, self->_prevLinear, po);
-                if (img.width == 0) {
-                    po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
-                    img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
-                }
+                if (img.width == 0) img = finish(po);
             } else if (mode == kViewSourceMap) {
                 img = source_map(m, kPreviewSize);
             } else if (mode == kViewGhost) {
-                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
-                po.local_tone = true;
-                img = ghost_image(hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po), m,
-                                  kPreviewSize);
+                img = ghost_image(finish(po), m, kPreviewSize);
             } else {
-                po.exposure_ev = m.reference_ev_offset + m.opening_ev + ev;
-                // 明暗差を圧縮したときは、Lightroom で開いたときと同じ見え方で描く（局所トーンマッピングを重ねない）。
-                if (!m.gain.empty()) po.local_tone = false;
-                img = hdr::render_preview(m.data.data(), m.width, m.height, m.cfa, ref.color_matrix, ref.as_shot_neutral, po);
+                img = finish(po);
                 if (mode == kViewOverlay) {
                     const hdr::Rgb8Image map = source_map(m, kPreviewSize);
                     if (map.rgb.size() == img.rgb.size()) {

@@ -58,6 +58,23 @@ inline double shoulder(double x) {
     return 0.5 + 0.5 * (1.0 - std::exp(-(x - 0.5) / 0.5));
 }
 
+// Camera Raw の既定の見え方に近いトーンカーブ（線形 → 線形、白 = 1）。対数 2 の表で、間は直線で補う。
+// 中間調（白の 2〜4 段下）を 1 段ほど明るくし、白の 4.5 段より下を沈め、白の手前をなだらかに寝かせる。
+// 白の 6 段より下は場面によって違った（沈む／持ち上がる）ので、2 場面の中間にした。
+double acr_tone(double v) {
+    static const double kX[] = {-10, -9, -8, -7, -6.5, -6, -5.5, -5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5, 0};
+    static const double kY[] = {-13, -11.6, -10.4, -8.8, -7.85, -7.07, -6.27, -5.48, -4.51, -3.56, -2.70, -1.99, -1.44, -0.94, -0.55, -0.27, -0.06, 0};
+    const int n = static_cast<int>(sizeof(kX) / sizeof(kX[0]));
+    if (!(v > 0.0)) return 0.0;
+    const double l = std::log2(v);
+    if (l >= kX[n - 1]) return 1.0;
+    if (l < kX[0]) return std::exp2(kY[0] + 1.4 * (l - kX[0]));
+    int i = 0;
+    while (i + 2 < n && l >= kX[i + 1]) ++i;
+    const double t = (l - kX[i]) / (kX[i + 1] - kX[i]);
+    return std::exp2(kY[i] + t * (kY[i + 1] - kY[i]));
+}
+
 inline uint8_t to_srgb8(double v) {
     v = std::min(1.0, std::max(0.0, v));
     const double s = v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
@@ -166,6 +183,57 @@ RgbFloatImage render_preview_linear(const float* cfa, int width, int height, con
     return out;
 }
 
+RgbFloatImage camera_rgb_preview(const float* rgb, int width, int height, float black, const CfaPattern& pattern,
+                                 const double color_matrix[3][3], const double neutral[3], const PreviewOptions& opt) {
+    RgbFloatImage out;
+    const int block = pattern.is_xtrans() ? 3 : 2;
+    const int longest = std::max(width, height);
+    const int step = std::max(1, static_cast<int>(std::ceil(static_cast<double>(longest) / block / std::max(16, opt.max_size))));
+    const int cell = step * block;
+    out.width = width / cell;
+    out.height = height / cell;
+    if (out.width <= 0 || out.height <= 0) return out;
+    out.rgb.assign(static_cast<std::size_t>(out.width) * out.height * 3, 0.0f);
+    double m[3][3];
+    double sum = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) sum += std::fabs(color_matrix[i][j]);
+    }
+    if (sum > 0.0) {
+        camera_to_srgb(color_matrix, m);
+    } else {
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) m[i][j] = i == j ? 1.0 : 0.0;
+        }
+    }
+    const double gain = std::exp2(opt.exposure_ev);
+    double wb[3];
+    for (int c = 0; c < 3; ++c) wb[c] = neutral[c] > 0.0 ? 1.0 / neutral[c] : 1.0;
+    const double inv_n = 1.0 / (static_cast<double>(cell) * cell);
+    parallel_for(out.height, [&](int y0, int y1) {
+        for (int oy = y0; oy < y1; ++oy) {
+            for (int ox = 0; ox < out.width; ++ox) {
+                double s[3] = {};
+                for (int y = oy * cell; y < (oy + 1) * cell; ++y) {
+                    const float* row = rgb + (static_cast<std::size_t>(y) * width + static_cast<std::size_t>(ox) * cell) * 3;
+                    for (int k = 0; k < cell; ++k) {
+                        s[0] += row[k * 3];
+                        s[1] += row[k * 3 + 1];
+                        s[2] += row[k * 3 + 2];
+                    }
+                }
+                double cam[3];
+                for (int c = 0; c < 3; ++c) cam[c] = (s[c] * inv_n - black) * wb[c] * gain;
+                float* dst = out.rgb.data() + (static_cast<std::size_t>(oy) * out.width + ox) * 3;
+                for (int i = 0; i < 3; ++i) {
+                    dst[i] = static_cast<float>(std::max(0.0, m[i][0] * cam[0] + m[i][1] * cam[1] + m[i][2] * cam[2]));
+                }
+            }
+        }
+    });
+    return out;
+}
+
 Rgb8Image finish_preview(RgbFloatImage lin, const PreviewOptions& opt) {
     if (opt.local_tone) local_tone_map(lin, opt.tone_range);
     Rgb8Image out;
@@ -175,7 +243,8 @@ Rgb8Image finish_preview(RgbFloatImage lin, const PreviewOptions& opt) {
     parallel_for(lin.height, [&](int y0, int y1) {
         for (std::size_t i = static_cast<std::size_t>(y0) * lin.width * 3; i < static_cast<std::size_t>(y1) * lin.width * 3; ++i) {
             double v = lin.rgb[i];
-            if (opt.tone_map) v = shoulder(v);
+            if (opt.acr_curve) v = acr_tone(v);
+            else if (opt.tone_map) v = shoulder(v);
             out.rgb[i] = to_srgb8(v);
         }
     });
