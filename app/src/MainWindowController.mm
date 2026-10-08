@@ -963,12 +963,13 @@ const int kPreviewSize = 3200;
     [s appendFormat:@"%@\n%@\n", ns(f0.unique_camera_model), ns(f0.lens_model)];
     [s appendString:_converter.empty() ? @"Adobe DNG Converter: なし（無くても動きます）\n（色と明るさは LibRaw の値。Camera Raw で\n CR2 を開いたときと少し違います。入手は\n メニュー「RawHDR Composer」→\n「Adobe DNG Converter…」）\n\n"
                                        : @"Adobe DNG Converter: あり\n（色と明るさを Camera Raw に揃えます）\n\n"];
-    [s appendString:@"露出比（隣どうし、実測）\n"];
+    [s appendString:@"露出比（隣どうし、全体で最適化した値）\n"];
     for (const hdr::PairFit& f : _plan.fits) {
-        [s appendFormat:@" %d→%d  ×%.3f  (%+.3f EV)%@\n", f.dark + 1, f.bright + 1, f.ratio, std::log2(f.ratio / f.nominal_ratio),
+        const double r = f.solved_ratio > 0.0 ? f.solved_ratio : f.ratio;
+        [s appendFormat:@" %d→%d  ×%.3f  (%+.3f EV)%@\n", f.dark + 1, f.bright + 1, r, std::log2(r / f.nominal_ratio),
                         f.measured ? @"" : @" 名目値"];
     }
-    [s appendString:@"  ※(差) = EXIF の名目値とのずれ\n"];
+    [s appendFormat:@"  ※(差) = EXIF の名目値とのずれ\n  離れた組も %zu 組測って合わせた\n", _plan.wide_fits.size()];
     if (_hasMerged) {
         [s appendFormat:@"\n基準: %d（最も暗いフレームより %+.2f 段明るい）\n", _merged.reference + 1, std::log2(_merged.reference_rel_exposure)];
         if (_lateralCa.valid) {

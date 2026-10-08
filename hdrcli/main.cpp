@@ -236,8 +236,11 @@ int cmd_merge(int argc, char** argv) {
                     shutter_text(frames[i].exposure_time).c_str(), std::log2(plan.rel_exposure[o]), c.level[0], c.level[1], c.level[2]);
     }
     for (const hdr::PairFit& f : plan.fits) {
-        std::printf("  [%d]→[%d] 比 %.4f（名目 %.4f、差 %+.3f EV）%s\n", f.dark + 1, f.bright + 1, f.ratio, f.nominal_ratio,
-                    std::log2(f.ratio / f.nominal_ratio), f.measured ? "" : "  ※実測できず名目値");
+        std::printf("  [%d]→[%d] 比 %.4f（実測 %.4f・名目 %.4f、名目との差 %+.3f EV）%s\n", f.dark + 1, f.bright + 1, f.solved_ratio, f.ratio,
+                    f.nominal_ratio, std::log2(f.solved_ratio / f.nominal_ratio), f.measured ? "" : "  ※実測できず名目値");
+    }
+    for (const hdr::PairFit& f : plan.wide_fits) {
+        std::printf("  [%d]→[%d] 比 %.4f（離れた組の実測。全体の最適化に使用）\n", f.dark + 1, f.bright + 1, f.ratio);
     }
 
     mo.reference = ref;

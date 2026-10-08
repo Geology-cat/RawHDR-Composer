@@ -110,8 +110,9 @@ void robust_fit(const std::vector<Sample>& samples, int channel, double& slope, 
     used = static_cast<int>(s.size());
 }
 
+// min_dark: 暗い方の値の下限（飽和レベルに対する比）。離れた組では暗い方がノイズと黒のずれに埋もれやすいので上げる。
 PairFit fit_pair(const RawFrame& dark, const ClipLevels& clip_d, const RawFrame& bright, const ClipLevels& clip_b,
-                 double nominal, const ExposureOptions& opt) {
+                 double nominal, const ExposureOptions& opt, double min_dark = 0.0) {
     PairFit fit;
     fit.nominal_ratio = nominal;
     // ブロック（CFA の周期の4倍四方）ごとに、色ごとの平均と最大を取る。
@@ -145,6 +146,7 @@ PairFit fit_pair(const RawFrame& dark, const ClipLevels& clip_d, const RawFrame&
                     const Sample s{static_cast<float>(sum_b[c] / n[c]), static_cast<float>(sum_d[c] / n[c]),
                                    static_cast<uint8_t>(c)};
                     if (s.b < opt.fit_lower * clip_b.level[c]) continue;
+                    if (s.d < min_dark * clip_d.level[c]) continue;
                     ld.push_back(s);
                     // 輪郭をまたぐブロックは、わずかなずれや動体で比が狂うので当てはめには使わない。
                     const bool flat = max_b[c] - min_b[c] <= 0.3f * s.b + 0.01f * clip_b.level[c];
@@ -279,6 +281,88 @@ ExposurePlan estimate_exposures(const std::vector<RawFrame>& frames, const Expos
         plan.rel_exposure[k + 1] = plan.rel_exposure[k] * fit.ratio;
         plan.fits.push_back(std::move(fit));
     }
+    // ---- 全体の最適化 ----
+    // 隣どうしの比をつなぐと、それぞれのわずかな偏り（同じ向きに出やすい）が積み重なる。
+    // 2 枚以上離れた組の比も測り、すべての組の「対数の露光量の差」を同時に最小二乗で満たす値を求める。
+    // 実測できなかった組（名目値）は、ほかに手がかりが無いときだけ効くよう、ごく小さい重みにする。
+    for (int g = 2; g <= options.global_span; ++g) {
+        for (int k = 0; k + g < n; ++k) {
+            const int d = plan.order[k], b = plan.order[k + g];
+            PairFit fit = fit_pair(frames[d], plan.clip[d], frames[b], plan.clip[b], std::exp2(ev[b] - ev[d]), options, 0.01);
+            fit.dark = d;
+            fit.bright = b;
+            if (fit.measured) plan.wide_fits.push_back(std::move(fit));
+        }
+    }
+    if (!plan.wide_fits.empty()) {
+        // 未知数は e[1..n-1]（e[0] = 0、対数 2 の露光量）。式 e[hi] − e[lo] = log2(比) を重みつき最小二乗で解く。
+        // 動く物（波・光の筋）のある組は比が大きく外れるので、残差の大きい組の重みを下げて解き直す（IRLS）。
+        std::vector<int> pos(n, -1);
+        for (int k = 0; k < n; ++k) pos[plan.order[k]] = k;
+        struct Eq {
+            int lo, hi;
+            double r, w0;
+        };
+        std::vector<Eq> eqs;
+        for (const PairFit& f : plan.fits) eqs.push_back({pos[f.dark], pos[f.bright], std::log2(f.ratio), f.measured ? 1.0 : 1e-6});
+        for (const PairFit& f : plan.wide_fits) eqs.push_back({pos[f.dark], pos[f.bright], std::log2(f.ratio), 1.0});
+        const int m = n - 1;
+        std::vector<double> e(n, 0.0);
+        for (int k = 1; k < n; ++k) e[k] = std::log2(plan.rel_exposure[k]);  // 始めはつないだ値
+        bool ok = true;
+        for (int iter = 0; iter < 6 && ok; ++iter) {
+            std::vector<double> ata(static_cast<std::size_t>(m) * m, 0.0), atr(m, 0.0);
+            for (const Eq& q : eqs) {
+                // 残差が 1% を超える組は、超えた分だけ重みを下げる（Cauchy）。
+                const double res = e[q.hi] - e[q.lo] - q.r;
+                const double t = res / 0.015;
+                const double w = q.w0 / (1.0 + t * t);
+                const int a = q.hi - 1, c = q.lo - 1;  // 未知数の番号（-1 は e[0] = 0）
+                if (a >= 0) {
+                    ata[static_cast<std::size_t>(a) * m + a] += w;
+                    atr[a] += w * q.r;
+                }
+                if (c >= 0) {
+                    ata[static_cast<std::size_t>(c) * m + c] += w;
+                    atr[c] -= w * q.r;
+                }
+                if (a >= 0 && c >= 0) {
+                    ata[static_cast<std::size_t>(a) * m + c] -= w;
+                    ata[static_cast<std::size_t>(c) * m + a] -= w;
+                }
+            }
+            // ガウス・ジョルダンの消去法（m は高々十数）。
+            std::vector<double> x(atr);
+            for (int i = 0; i < m && ok; ++i) {
+                int piv = i;
+                for (int r = i + 1; r < m; ++r) {
+                    if (std::fabs(ata[static_cast<std::size_t>(r) * m + i]) > std::fabs(ata[static_cast<std::size_t>(piv) * m + i])) piv = r;
+                }
+                if (std::fabs(ata[static_cast<std::size_t>(piv) * m + i]) < 1e-15) {
+                    ok = false;
+                    break;
+                }
+                if (piv != i) {
+                    for (int c = 0; c < m; ++c) std::swap(ata[static_cast<std::size_t>(i) * m + c], ata[static_cast<std::size_t>(piv) * m + c]);
+                    std::swap(x[i], x[piv]);
+                }
+                for (int r = 0; r < m; ++r) {
+                    if (r == i) continue;
+                    const double k = ata[static_cast<std::size_t>(r) * m + i] / ata[static_cast<std::size_t>(i) * m + i];
+                    if (k == 0.0) continue;
+                    for (int c = i; c < m; ++c) ata[static_cast<std::size_t>(r) * m + c] -= k * ata[static_cast<std::size_t>(i) * m + c];
+                    x[r] -= k * x[i];
+                }
+            }
+            if (ok) {
+                for (int i = 0; i < m; ++i) e[i + 1] = x[i] / ata[static_cast<std::size_t>(i) * m + i];
+            }
+        }
+        if (ok) {
+            for (int k = 1; k < n; ++k) plan.rel_exposure[k] = std::exp2(e[k]);
+        }
+    }
+    for (int k = 0; k + 1 < n; ++k) plan.fits[k].solved_ratio = plan.rel_exposure[k + 1] / plan.rel_exposure[k];
     return plan;
 }
 

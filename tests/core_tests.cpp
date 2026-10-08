@@ -197,6 +197,24 @@ void test_merge_accuracy() {
         CHECK(std::fabs(err) < 0.01, "相対露光量の誤差 o=%d: %+.4f EV（推定 %.4f、正解 %.4f）", o, err, plan.rel_exposure[o], actual[o]);
     }
     for (int i = 0; i < 4; ++i) CHECK(plan.clip[i].detected[1] || i == 1 || i == 3, "飽和レベルの検出 i=%d", i);
+    // 露出比の全体最適化: 離れた組も測られ、隣どうしの比（つなぎ目）は実測から大きく動かない。
+    CHECK(!plan.wide_fits.empty(), "離れた組の比が測られていない");
+    for (const hdr::PairFit& f : plan.fits) {
+        CHECK(std::fabs(std::log2(f.solved_ratio / f.ratio)) < 0.01, "つなぎ目の比が実測から動きすぎ %d→%d: %.4f / %.4f", f.dark, f.bright,
+              f.solved_ratio, f.ratio);
+    }
+    {
+        // 隣どうしをつなぐだけのとき（global_span = 1）より、正解からの誤差が増えないこと。
+        hdr::ExposureOptions one;
+        one.global_span = 1;
+        const hdr::ExposurePlan chain = hdr::estimate_exposures(frames, one);
+        double worst_chain = 0.0, worst_global = 0.0;
+        for (int o = 1; o < 4; ++o) {
+            worst_chain = std::max(worst_chain, std::fabs(std::log2(chain.rel_exposure[o] / actual[o])));
+            worst_global = std::max(worst_global, std::fabs(std::log2(plan.rel_exposure[o] / actual[o])));
+        }
+        CHECK(worst_global <= worst_chain + 0.005, "全体の最適化で誤差が増えた: %.4f > %.4f EV", worst_global, worst_chain);
+    }
 
     hdr::MergeOptions mo;
     const hdr::MergeResult m = hdr::merge_frames(frames, plan, mo);

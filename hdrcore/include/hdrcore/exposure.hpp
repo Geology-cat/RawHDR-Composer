@@ -39,6 +39,8 @@ struct PairFit {
     int samples = 0;
     bool measured = false;        // false = 有効な画素が足りず、名目値を使った
     std::vector<RatioBin> bins;
+    // 全体の最適化（ExposureOptions::global_span）で決めた比。measured の比との違いが、つなぎ目に残るずれ。
+    double solved_ratio = 0.0;
 };
 
 struct ExposureOptions {
@@ -46,6 +48,10 @@ struct ExposureOptions {
     // 飽和の手前の非線形な領域を避ける。
     double fit_upper = 0.80;
     double fit_lower = 0.01;
+    // 露出比の全体最適化: 並べた順で global_span 枚先までの組の比をすべて測り、まとめて最小二乗で解く
+    // （対数で）。隣どうしの比をつなぐだけだと誤差が積み重なり、基準フレームとの関係が数 % ずれる。
+    // 1 = 隣どうしをつなぐだけ（以前の動き）。
+    int global_span = 2;
 };
 
 struct ExposurePlan {
@@ -53,6 +59,7 @@ struct ExposurePlan {
     std::vector<double> rel_exposure;   // order の順。最も暗いフレームを 1 とした相対露光量
     std::vector<ClipLevels> clip;       // 入力の番号の順
     std::vector<PairFit> fits;          // order の隣り合う組ごと（N-1 個）
+    std::vector<PairFit> wide_fits;     // 全体の最適化に使った、2 枚以上離れた組
 };
 
 ExposurePlan estimate_exposures(const std::vector<RawFrame>& frames, const ExposureOptions& options = {});
