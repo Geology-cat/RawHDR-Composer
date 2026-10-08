@@ -18,7 +18,7 @@
 - 対応環境: **macOS 10.12.6 (Sierra) 以降**（Intel・Apple Silicon の Universal。Apple Silicon は macOS 11 以降）
 
 > 版 1.0.1。アプリ（GUI）とコマンドライン版（`rawhdr`）がある。回転・1 画素未満の位置合わせ（手持ち撮影）と、動体（ゴースト）への対策は今後の段階で追加する。
-> 計画: [docs/開発計画書.md](docs/開発計画書.md)
+> 計画: [docs/開発計画書.md](docs/開発計画書.md)　開発録・実装の現状・今後の提案: [docs/開発録と今後.md](docs/開発録と今後.md)
 
 ## 入手とインストール
 
