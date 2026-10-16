@@ -579,17 +579,23 @@ void apply_warp(RawFrame& f, const double w[4], const ClipLevels& clip, double t
     std::swap(f.data, f.original);
     const NoiseModel noise = estimate_noise(f, clip);
     const std::vector<float> rgb = demosaic(f.data.data(), W, H, f.cfa, noise);
-    // 飽和した画素（とその周り 2 画素）の印。動かした後もそこは飽和の値にする（補間で飽和の手前の値になると、
-    // 合成が使える画素と取り違えて、色のついた縁が出る）。
+    // 飽和した画素（とその周り 2 画素）の印を色ごとに付ける（ビット c）。動かした後も、その色はそこで飽和の値にする
+    // （補間で飽和の手前の値になると、合成が使える画素と取り違えて、色のついた縁が出る）。
+    // 飽和していない色は飽和の値にしない。最も暗いフレームでは、緑だけが飽和した所の赤・青が、合成でハイライトの
+    // 色を復元する手がかりになる（すべての色を飽和の値にすると、そこが真っ白またはピンクになる。雲で確認）。
+    // ただし色補間した値は飽和した色に引きずられているので、そこでは同じ色の元の画素だけから補間する。
     std::vector<uint8_t> sat(static_cast<std::size_t>(W) * H, 0);
     parallel_for(H, [&](int y0, int y1) {
+        // 行の帯ごとに、周り 2 行まで見て印を付ける（帯の境目で書き込みが重ならないように、自分の帯の行だけに書く）。
         for (int y = y0; y < y1; ++y) {
-            for (int x = 0; x < W; ++x) {
-                const int c = f.cfa.at(x, y);
-                if (clip.level[c] > 0.0f && f.data[static_cast<std::size_t>(y) * W + x] >= 0.98f * clip.level[c]) {
-                    for (int yy = std::max(0, y - 2); yy <= std::min(H - 1, y + 2); ++yy) {
-                        uint8_t* row = sat.data() + static_cast<std::size_t>(yy) * W;
-                        for (int xx = std::max(0, x - 2); xx <= std::min(W - 1, x + 2); ++xx) row[xx] = 1;
+            uint8_t* row = sat.data() + static_cast<std::size_t>(y) * W;
+            for (int yy = std::max(0, y - 2); yy <= std::min(H - 1, y + 2); ++yy) {
+                const float* src = f.data.data() + static_cast<std::size_t>(yy) * W;
+                for (int x = 0; x < W; ++x) {
+                    const int c = f.cfa.at(x, yy);
+                    if (clip.level[c] > 0.0f && src[x] >= 0.98f * clip.level[c]) {
+                        const uint8_t bit = static_cast<uint8_t>(1u << c);
+                        for (int xx = std::max(0, x - 2); xx <= std::min(W - 1, x + 2); ++xx) row[xx] |= bit;
                     }
                 }
             }
@@ -619,9 +625,29 @@ void apply_warp(RawFrame& f, const double w[4], const ClipLevels& clip, double t
                 const int ix = static_cast<int>(sx), iy = static_cast<int>(sy);
                 const int c = f.cfa.at(x, y);
                 const int nx = static_cast<int>(std::lround(sx)), ny = static_cast<int>(std::lround(sy));
-                if (sat[static_cast<std::size_t>(ny) * W + nx]) {
+                const uint8_t sm = sat[static_cast<std::size_t>(ny) * W + nx];
+                if (sm & (1u << c)) {
                     dst[x] = clip.level[c] > 0.0f ? clip.level[c] : smax;
                     continue;
+                }
+                if (sm) {
+                    // 近くでほかの色が飽和している: 同じ色の元の画素だけを、距離（半径 2 の三角）の重みで平均する。
+                    double sv = 0.0, sw = 0.0;
+                    for (int yy = iy - 1; yy <= iy + 2; ++yy) {
+                        const double wy = 2.0 - std::fabs(sy - yy);
+                        if (wy <= 0.0) continue;
+                        for (int xx = ix - 1; xx <= ix + 2; ++xx) {
+                            if (f.cfa.at(xx, yy) != c) continue;
+                            const double wx = 2.0 - std::fabs(sx - xx);
+                            if (wx <= 0.0) continue;
+                            sv += wx * wy * f.original[static_cast<std::size_t>(yy) * W + xx];
+                            sw += wx * wy;
+                        }
+                    }
+                    if (sw > 0.0) {
+                        dst[x] = static_cast<float>(sv / sw);
+                        continue;
+                    }
                 }
                 double kx[4], ky[4];
                 cubic(sx - ix, kx);

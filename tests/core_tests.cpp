@@ -233,7 +233,7 @@ void test_merge_accuracy() {
             const int c = m.cfa.at(x, y);
             const double truth = scene(x, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
             if (truth >= 0.9 || truth < 1e-4) continue;  // 最も暗いフレームでも飽和する所・ほぼ黒は除く
-            const double got = m.data[static_cast<std::size_t>(y) * w + x];
+            const double got = m.data[static_cast<std::size_t>(y) * w + x] * m.highlight_headroom;
             const double rel = std::fabs(got - truth) / truth;
             ++count;
             // 雑音があるので1画素ずつは甘めに見て、外れの数で判定する。
@@ -313,7 +313,7 @@ void test_merge_accuracy() {
             for (int xx = x; xx < x + 8; ++xx) {
                 const int c = m.cfa.at(xx, y);
                 st += scene(xx, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
-                sg += m.data[static_cast<std::size_t>(y) * w + xx];
+                sg += m.data[static_cast<std::size_t>(y) * w + xx] * m.highlight_headroom;
             }
         }
         worst_col = std::max(worst_col, std::fabs(sg / st - 1.0));
@@ -332,9 +332,9 @@ void test_merge_accuracy() {
                 const double truth = scene(x, y, w, h) * chan_gain[c] * actual[0] * 400.0 / clip;
                 if (truth >= 0.9 || truth < 1e-4) continue;
                 const std::size_t i = static_cast<std::size_t>(y) * w + x;
-                es += (m.data[i] - truth) * (m.data[i] - truth) / (truth * truth);
-                ea += (ma.data[i] - truth) * (ma.data[i] - truth) / (truth * truth);
-                sg += ma.data[i];
+                es += (m.data[i] * m.highlight_headroom - truth) * (m.data[i] * m.highlight_headroom - truth) / (truth * truth);
+                ea += (ma.data[i] * ma.highlight_headroom - truth) * (ma.data[i] * ma.highlight_headroom - truth) / (truth * truth);
+                sg += ma.data[i] * ma.highlight_headroom;
                 st += truth;
             }
         }
@@ -419,7 +419,7 @@ void test_deghost() {
             for (int x = x0 + 4; x < x0 + side - 4; ++x) {
                 const int c = m.cfa.at(x, y);
                 const double unit = chan_gain[c] * actual[0] * 400.0 / clip;
-                sg += m.data[static_cast<std::size_t>(y) * w + x] - scene(x, y, w, h) * unit;
+                sg += m.data[static_cast<std::size_t>(y) * w + x] * m.highlight_headroom - scene(x, y, w, h) * unit;
                 sb += obj * unit;
             }
         }
@@ -642,7 +642,7 @@ void test_subpixel_alignment() {
             const int c = m.cfa.at(x, y);
             const double truth = scene(x, y, w, h) * chan_gain[c] * expo[0] * 400.0 / clip;
             if (truth >= 0.9 || truth < 1e-3) continue;
-            truth_err += std::fabs(m.data[static_cast<std::size_t>(y) * w + x] - truth) / truth;
+            truth_err += std::fabs(m.data[static_cast<std::size_t>(y) * w + x] * m.highlight_headroom - truth) / truth;
             ++tn;
         }
     }
@@ -650,6 +650,74 @@ void test_subpixel_alignment() {
     // 元に戻せる。
     hdr::apply_shift(frames[0], 0, 0);
     CHECK(!frames[0].warped && frames[0].original.empty(), "再モザイクを元に戻せない");
+}
+
+// 最も暗いフレームでも緑（と青）だけが飽和する白い所が、ピンクにならず白く・正しい明るさに戻ること。
+void test_highlight_reconstruction() {
+    std::printf("ハイライトの復元\n");
+    const int w = 400, h = 300;
+    const float clip = 15000.0f;
+    const double actual[2] = {1.0, 4.03};
+    const double chan_gain[3] = {0.6, 1.0, 0.8};
+    std::vector<hdr::RawFrame> frames;
+    // 明るい円の頂上は 40。最も暗いフレームで緑は 25、青は 31 を超えると飽和し、赤は飽和しない。
+    for (int k = 0; k < 2; ++k) {
+        frames.push_back(make_frame(w, h, actual[k], 600.0, clip, 3.0, 40 + k, k ? 1.0 / 250 : 1.0 / 1000));
+        for (int c = 0; c < 3; ++c) frames.back().as_shot_neutral[c] = chan_gain[c];
+    }
+    const hdr::ExposurePlan plan = hdr::estimate_exposures(frames);
+    const hdr::MergeResult m = hdr::merge_frames(frames, plan, hdr::MergeOptions());
+    CHECK(m.highlight_headroom > 1.2, "飽和点より明るく復元されていない（%.3f）", m.highlight_headroom);
+    // 2×2 ごとに、ホワイトバランスを掛けた色の比（G/R・B/R）と、明るさの正解との比を見る。円の斜面では
+    // 2×2 の中で色ごとに位置が違うぶん 1 セルずつは揺れるので、中央値で見る。
+    const double unit = actual[0] * 600.0 / (clip * m.highlight_headroom);
+    std::vector<double> gr, br, lvl;
+    for (int y = 0; y + 1 < h; y += 2) {
+        for (int x = 0; x + 1 < w; x += 2) {
+            const double s = scene(x + 0.5, y + 0.5, w, h);
+            if (s < 26.0 || s > 39.0) continue;  // 緑が飽和している所（赤は飽和していない）
+            double v[3] = {}, n[3] = {};
+            for (int dy = 0; dy < 2; ++dy) {
+                for (int dx = 0; dx < 2; ++dx) {
+                    const int c = m.cfa.at(x + dx, y + dy);
+                    v[c] += m.data[static_cast<std::size_t>(y + dy) * w + x + dx] / chan_gain[c];
+                    n[c] += 1.0;
+                }
+            }
+            for (int c = 0; c < 3; ++c) v[c] /= n[c];
+            gr.push_back(v[1] / v[0]);
+            br.push_back(v[2] / v[0]);
+            lvl.push_back(v[1] / (s * unit));
+        }
+    }
+    CHECK(gr.size() > 100, "調べたセルが少ない（%zu）", gr.size());
+    if (gr.size() < 10) return;
+    const auto median = [](std::vector<double> v) {
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        return v[v.size() / 2];
+    };
+    const double mg = median(gr), mb = median(br), ml = median(lvl);
+    CHECK(std::fabs(mg - 1.0) < 0.03 && std::fabs(mb - 1.0) < 0.03, "飽和した所の色が白に戻っていない（G/R %.3f、B/R %.3f）", mg, mb);
+    CHECK(std::fabs(ml - 1.0) < 0.03, "飽和した所の明るさが正解と違う（%.3f 倍）", ml);
+
+    // 回転して動かした（再モザイクした）最も暗いフレームでも、緑だけが飽和した所の赤は飽和の値にしない
+    // （赤まで飽和の値にすると、復元の手がかりがなくなり真っ白またはピンクになる）。
+    {
+        hdr::RawFrame f = frames[0];
+        const double wp[4] = {1.0, 0.002, 0.4, -0.3};
+        hdr::apply_warp(f, wp, plan.clip[0], 0.0);
+        int red = 0, red_at_clip = 0;
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                if (f.cfa.at(x, y) != 0) continue;
+                const double s = scene(x, y, w, h);
+                if (s < 27.0 || s > 38.0) continue;  // 緑は飽和、赤は飽和の 0.65 倍以下
+                ++red;
+                if (f.data[static_cast<std::size_t>(y) * w + x] >= 0.98f * plan.clip[0].level[0]) ++red_at_clip;
+            }
+        }
+        CHECK(red > 50 && red_at_clip == 0, "動かしたフレームで、緑が飽和した所の赤が飽和の値になった（%d / %d）", red_at_clip, red);
+    }
 }
 
 }  // namespace
@@ -661,6 +729,7 @@ int main() {
     test_demosaic();
     test_alignment();
     test_subpixel_alignment();
+    test_highlight_reconstruction();
     std::printf("%d / %d 件成功\n", g_checks - g_failed, g_checks);
     return g_failed == 0 ? 0 : 1;
 }

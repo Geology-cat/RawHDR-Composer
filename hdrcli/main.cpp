@@ -292,6 +292,10 @@ int cmd_merge(int argc, char** argv) {
     if (mo.deghost) {
         std::printf("  ゴースト対策: 動いた所 %d か所、面積 %.2f%%（感度 %.2f）\n", m.ghost_regions, m.ghost_fraction * 100.0, mo.ghost_sensitivity);
     }
+    if (m.highlight_fraction > 0.0) {
+        std::printf("  ハイライトの復元: 飽和した色を推定し直した所 %.4f%%、飽和点より明るく残した分 ×%.3f\n",
+                    m.highlight_fraction * 100.0, m.highlight_headroom);
+    }
     if (m.anchor_samples >= 5000) {
         std::printf("  明るさの基準合わせ: ×%.4f（基準フレームとじかに比べた画素 %d）\n", m.anchor_correction, m.anchor_samples);
     } else {

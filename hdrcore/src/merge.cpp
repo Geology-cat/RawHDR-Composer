@@ -329,6 +329,234 @@ void deghost(MergeResult& res, const std::vector<RawFrame>& frames, const Exposu
     res.ghost_fraction = static_cast<double>(restricted) / static_cast<double>(ncell);
 }
 
+float smooth01(float t) {
+    t = std::min(1.0f, std::max(0.0f, t));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// ハイライトの復元。最も暗いフレームでも飽和した色（多くは緑）は 1.0 で頭打ちになり、飽和していない赤・青だけが
+// 明るさに応じて伸びるので、ホワイトバランスを掛けるとピンク（マゼンタ）になる（雲で確認。最も暗い 1/160 秒でも
+// 緑が飽和し、赤・青は緑の 1.0〜1.4 倍）。飽和した色を、同じ 2×2 の飽和していない色と「周りの飽和の手前の所の色の比」
+// から推定し直す。比は近くの明るい所（飽和の手前）で測り、測れない所は粗い格子から埋める（push-pull）。
+// 飽和した画素（t1 以上）を含む 2×2 だけを扱い、値は上げるだけで下げない。飽和の手前（t0）から滑らかに混ぜるので、
+// 飽和の縁に段差は出ない。すべての色が飽和した所は、比の色（ほぼ白）で最も強い制約に合わせる。
+// 1.0 を超えた分をどこまで残すかは最後に決め、それを超える 2×2 は色の比を保ったまま縮める。
+// 戻り値は残した明るさ H（1.0 を超える値の上限。data はまだ縮めていない）。Bayer 以外は何もしない。
+float reconstruct_highlights(MergeResult& res, const double neutral[3]) {
+    if (!res.cfa.is_bayer() || res.width < 4 || res.height < 4) return 1.0f;
+    const float t0 = 0.90f, t1 = 0.98f;  // この間で「飽和した」度合いを 0 → 1 に
+    const int cw = res.width / 2, ch = res.height / 2;
+    // 2×2 の中の各色の位置。
+    int px[3][2], py[3][2], np[3] = {};
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            const int c = res.cfa.at(x, y);
+            if (np[c] < 2) {
+                px[c][np[c]] = x;
+                py[c][np[c]] = y;
+                ++np[c];
+            }
+        }
+    }
+    if (!np[0] || !np[1] || !np[2]) return 1.0f;
+    double mul[3];
+    for (int c = 0; c < 3; ++c) mul[c] = neutral[c] > 0.0 ? neutral[1] / neutral[c] : 1.0;
+    auto at = [&](int cx, int cy, int c, int k) -> float& {
+        return res.data[static_cast<std::size_t>(2 * cy + py[c][k]) * res.width + 2 * cx + px[c][k]];
+    };
+
+    // 飽和した所があるか（無ければ何もしない。出力は前と同じ）。
+    bool any = false;
+    for (float v : res.data) {
+        if (v >= t1) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) return 1.0f;
+
+    // ---- 色の比（ホワイトバランスを掛けた値の log(G/R)・log(B/R)）を、飽和の手前の明るい所で測る ----
+    const int bs = 16;  // 格子の 1 目 = 16×16 セル（32×32 画素）
+    const int gw = (cw + bs - 1) / bs, gh = (ch + bs - 1) / bs;
+    std::vector<double> s1(static_cast<std::size_t>(gw) * gh, 0.0), s2(s1.size(), 0.0), sn(s1.size(), 0.0);
+    for (int cy = 0; cy < ch; ++cy) {
+        for (int cx = 0; cx < cw; ++cx) {
+            float q = 0.0f;
+            double wbv[3];
+            for (int c = 0; c < 3; ++c) {
+                double s = 0.0;
+                for (int k = 0; k < np[c]; ++k) {
+                    const float v = at(cx, cy, c, k);
+                    q = std::max(q, v);
+                    s += v;
+                }
+                wbv[c] = s / np[c] * mul[c];
+            }
+            if (q >= t0 || q < 0.3f) continue;
+            if (wbv[0] < 0.02 || wbv[1] < 0.02 || wbv[2] < 0.02) continue;
+            const std::size_t gi = static_cast<std::size_t>(cy / bs) * gw + cx / bs;
+            s1[gi] += q * std::log(wbv[1] / wbv[0]);
+            s2[gi] += q * std::log(wbv[2] / wbv[0]);
+            sn[gi] += q;
+        }
+    }
+    // push-pull: 粗い格子へ足し上げ、細かい格子で測れていない所を粗い格子の値で埋める。
+    struct Level {
+        int w, h;
+        std::vector<double> a, b, n;
+    };
+    std::vector<Level> lv;
+    lv.push_back({gw, gh, s1, s2, sn});
+    while (lv.back().w > 1 || lv.back().h > 1) {
+        const Level& f = lv.back();
+        Level c{(f.w + 1) / 2, (f.h + 1) / 2, {}, {}, {}};
+        c.a.assign(static_cast<std::size_t>(c.w) * c.h, 0.0);
+        c.b = c.a;
+        c.n = c.a;
+        for (int y = 0; y < f.h; ++y) {
+            for (int x = 0; x < f.w; ++x) {
+                const std::size_t i = static_cast<std::size_t>(y) * f.w + x, j = static_cast<std::size_t>(y / 2) * c.w + x / 2;
+                c.a[j] += f.a[i];
+                c.b[j] += f.b[i];
+                c.n[j] += f.n[i];
+            }
+        }
+        lv.push_back(std::move(c));
+    }
+    // 最も粗い所で 0 なら比は 1（無彩色）。細かい格子へ: 測った量が少ないほど粗い格子の値に寄せる。
+    std::vector<double> ma(1), mb(1);
+    {
+        const Level& t = lv.back();
+        ma[0] = t.n[0] > 0.0 ? t.a[0] / t.n[0] : 0.0;
+        mb[0] = t.n[0] > 0.0 ? t.b[0] / t.n[0] : 0.0;
+    }
+    const double lambda = 4.0;  // この重み（明るさ × セル数）より少ないと粗い格子の値が勝つ
+    for (int L = static_cast<int>(lv.size()) - 2; L >= 0; --L) {
+        const Level& f = lv[L];
+        const int pw = lv[L + 1].w;
+        std::vector<double> na(f.a.size()), nb(f.a.size());
+        for (int y = 0; y < f.h; ++y) {
+            for (int x = 0; x < f.w; ++x) {
+                const std::size_t i = static_cast<std::size_t>(y) * f.w + x, j = static_cast<std::size_t>(y / 2) * pw + x / 2;
+                na[i] = (f.a[i] + lambda * ma[j]) / (f.n[i] + lambda);
+                nb[i] = (f.b[i] + lambda * mb[j]) / (f.n[i] + lambda);
+            }
+        }
+        ma.swap(na);
+        mb.swap(nb);
+    }
+    // 粗い格子から埋めた所の段差をならす。
+    {
+        std::vector<float> fa(ma.begin(), ma.end()), fb(mb.begin(), mb.end());
+        for (int pass = 0; pass < 2; ++pass) {
+            box_blur(fa, gw, gh, 1);
+            box_blur(fb, gw, gh, 1);
+        }
+        for (std::size_t i = 0; i < ma.size(); ++i) {
+            ma[i] = fa[i];
+            mb[i] = fb[i];
+        }
+    }
+
+    // ---- 飽和した色を推定し直す ----
+    std::vector<int> done_rows(static_cast<std::size_t>(ch), 0);
+    parallel_for(ch, [&](int cy0, int cy1) {
+        for (int cy = cy0; cy < cy1; ++cy) {
+            const float fy = (cy + 0.5f) / bs - 0.5f;
+            const int iy = static_cast<int>(std::floor(fy));
+            const float ty = fy - iy;
+            for (int cx = 0; cx < cw; ++cx) {
+                float q[3] = {};
+                double wbv[3];
+                for (int c = 0; c < 3; ++c) {
+                    double s = 0.0;
+                    for (int k = 0; k < np[c]; ++k) {
+                        const float v = at(cx, cy, c, k);
+                        q[c] = std::max(q[c], v);
+                        s += v;
+                    }
+                    wbv[c] = s / np[c] * mul[c];
+                }
+                if (q[0] < t1 && q[1] < t1 && q[2] < t1) continue;
+                ++done_rows[static_cast<std::size_t>(cy)];
+                // 色の比（R を 0 とした対数）を双一次で読む。
+                const float fx = (cx + 0.5f) / bs - 0.5f;
+                const int ix = static_cast<int>(std::floor(fx));
+                const float tx = fx - ix;
+                double lc[3] = {0.0, 0.0, 0.0};
+                for (int dy = 0; dy <= 1; ++dy) {
+                    const int yy = std::min(gh - 1, std::max(0, iy + dy));
+                    for (int dx = 0; dx <= 1; ++dx) {
+                        const int xx = std::min(gw - 1, std::max(0, ix + dx));
+                        const double w = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
+                        lc[1] += w * ma[static_cast<std::size_t>(yy) * gw + xx];
+                        lc[2] += w * mb[static_cast<std::size_t>(yy) * gw + xx];
+                    }
+                }
+                float sat[3];
+                for (int c = 0; c < 3; ++c) sat[c] = smooth01((q[c] - t0) / (t1 - t0));
+                for (int c = 0; c < 3; ++c) {
+                    if (sat[c] <= 0.0f) continue;
+                    // 飽和していない色からの推定（飽和していない度合いで重みづけ）。
+                    double se = 0.0, sw = 0.0, bound = 0.0;
+                    for (int u = 0; u < 3; ++u) {
+                        if (u == c) continue;
+                        const double e = wbv[u] * std::exp(lc[c] - lc[u]);
+                        se += (1.0 - sat[u]) * e;
+                        sw += 1.0 - sat[u];
+                        bound = std::max(bound, e);
+                    }
+                    // すべて飽和していれば、ほかの色からの下限のうち大きい方（明るさの下限）。
+                    double est = sw > 0.05 ? se / sw : bound;
+                    if (sw <= 0.05) est = std::max(est, wbv[c]);
+                    const float e = static_cast<float>(est / mul[c]);
+                    for (int k = 0; k < np[c]; ++k) {
+                        float& v = at(cx, cy, c, k);
+                        const float t = smooth01((v - t0) / (t1 - t0));
+                        if (e > v) v += t * (e - v);
+                    }
+                }
+            }
+        }
+    });
+
+    std::size_t done = 0;
+    for (int d : done_rows) done += static_cast<std::size_t>(d);
+    res.highlight_fraction = static_cast<double>(done) / (static_cast<double>(cw) * ch);
+
+    // ---- どこまで明るさを残すか ----
+    // 1.0 を超えた画素が十分あれば（雲など）、その 99.5% が収まる明るさまで残す（呼び出し側で全体を縮める）。
+    // わずかな点（太陽の反射など）のために全体を縮めると、暗部が Camera Raw の刻みに対して粗くなる
+    // （灯台で、飽和 0.0005% のために暗部のノイズが刻みの 0.11 倍 → 0.04 倍）ので、そのときは残さず色だけ直す。
+    std::vector<float> over;
+    for (float v : res.data) {
+        if (v > 1.0f) over.push_back(v);
+    }
+    float H = 1.0f;
+    if (!over.empty() && over.size() >= res.data.size() / 10000) {
+        const std::size_t k = over.size() * 995 / 1000;
+        std::nth_element(over.begin(), over.begin() + k, over.end());
+        H = over[k];
+    }
+    // H を超える 2×2 は、色の比を保ったまま最大が H になるよう縮める。
+    parallel_for(ch, [&](int cy0, int cy1) {
+        for (int cy = cy0; cy < cy1; ++cy) {
+            for (int cx = 0; cx < cw; ++cx) {
+                float* p0 = res.data.data() + static_cast<std::size_t>(2 * cy) * res.width + 2 * cx;
+                float* p1 = p0 + res.width;
+                const float m = std::max({p0[0], p0[1], p1[0], p1[1]});
+                if (m <= H) continue;
+                const float k = H / m;
+                p0[0] *= k;
+                p0[1] *= k;
+                p1[0] *= k;
+                p1[1] *= k;
+            }
+        }
+    });
+    return H;
+}
+
 }  // namespace
 
 int auto_reference(const std::vector<RawFrame>& frames, const ExposurePlan& plan) {
@@ -549,7 +777,7 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
     // ---- 合成 ----
     // 出力 = Σ w·v / (相対露光量 · 最も暗いフレームの飽和レベル)。
     const int darkest = plan.order[0];
-    const float l0 = std::min({plan.clip[darkest].level[0], plan.clip[darkest].level[1], plan.clip[darkest].level[2]});
+    float l0 = std::min({plan.clip[darkest].level[0], plan.clip[darkest].level[1], plan.clip[darkest].level[2]});
     if (!(l0 > 0.0f)) throw std::runtime_error("飽和レベルが分かりません");
     std::vector<float> scale(n);
     for (int o = 0; o < n; ++o) scale[o] = static_cast<float>(1.0 / (plan.rel_exposure[o] * l0));
@@ -572,6 +800,17 @@ MergeResult merge_frames(const std::vector<RawFrame>& frames, const ExposurePlan
             for (int x = 0; x < res.width; ++x) dst[x] = std::min(1.0f, dst[x]);
         }
     });
+    // 最も暗いフレームでも飽和した所の色を復元する。1.0 を超えて残した分は全体を縮めて 1.0 に収め、
+    // 「出力の 1.0 にあたる DN」（l0）をその分だけ大きくする（明るさの関係は変わらない）。
+    {
+        const float hr = reconstruct_highlights(res, frames[res.reference].as_shot_neutral);
+        if (hr > 1.0f) {
+            const float inv = 1.0f / hr;
+            for (float& v : res.data) v *= inv;
+            l0 *= hr;
+            res.highlight_headroom = hr;
+        }
+    }
 
     // ---- 基準フレームとの明るさの関係 ----
     const float lref = plan.clip[res.reference].level[1];
