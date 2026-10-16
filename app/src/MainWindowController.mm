@@ -20,7 +20,9 @@
 #include "hdrcore/tone_compress.hpp"
 
 #import "DngConverterPrompt.h"
+#import "PreferencesWindowController.h"
 #import "PreviewView.h"
+#import "SendTarget.h"
 
 // ---- 表示用の1行 ----------------------------------------------------------------------
 
@@ -317,6 +319,7 @@ const int kPreviewSize = 3200;
     NSPopUpButton* _formatPopup;
     NSTextField* _formatNote;
     NSButton* _exportButton;
+    NSButton* _sendButton;  // 「Lightroom Classic に送る」（送る先は環境設定）
     NSButton* _mergeButton;
     NSTextField* _zoomLabel;
     NSTextView* _infoView;
@@ -357,6 +360,7 @@ const int kPreviewSize = 3200;
     // 検証用
     NSString* _snapshotPath;
     NSString* _autoExportPath;
+    BOOL _autoSend;  // 検証用: 合成のあとに「送る」を押す（RBH_SEND）
     NSString* _autoChange;  // 検証用: 1回目の合成のあとに当てる設定（"ramp=0.86,safety=0.98,feather=64"）
     BOOL _automationPending;
 }
@@ -666,6 +670,12 @@ const int kPreviewSize = 3200;
     _exportButton = [NSButton buttonWithTitle:@"DNG を書き出す…" target:self action:@selector(exportDNG:)];
     [_exportButton setKeyEquivalent:@"\r"];
     [_exportButton setControlSize:NSControlSizeRegular];  // Large は macOS 11 以降
+    _sendButton = [NSButton buttonWithTitle:@"Lightroom Classic に送る" target:self action:@selector(sendToApp:)];
+    [self updateSendButtonTitle];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sendTargetChanged:)
+                                                 name:RBHSendTargetDidChangeNotification
+                                               object:nil];
 
     _infoView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 280, 200)];
     [_infoView setEditable:NO];
@@ -684,20 +694,20 @@ const int kPreviewSize = 3200;
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
         [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _averageCheck, _deghostCheck, ghostRow, compressRow, _compressAutoCheck, highlightRow, shadowRow, _caCheck, _mergeButton,
-        [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton,
+        [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton, _sendButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
     [right setOrientation:NSUserInterfaceLayoutOrientationVertical];
     [right setAlignment:NSLayoutAttributeLeading];
     [right setSpacing:8];
     [right setEdgeInsets:NSEdgeInsetsMake(12, 6, 12, 12)];
-    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, ghostRow, compressRow, highlightRow, shadowRow, _mergeButton, _formatPopup, _formatNote, _exportButton, infoScroll ]) {
+    for (NSView* v in @[ _refPopup, _alignPopup, _alignNote, rampRow, safetyRow, featherRow, ghostRow, compressRow, highlightRow, shadowRow, _mergeButton, _formatPopup, _formatNote, _exportButton, _sendButton, infoScroll ]) {
         [[v widthAnchor] constraintEqualToAnchor:[right widthAnchor] constant:-18].active = YES;
     }
     [right setCustomSpacing:10 afterView:_caCheck];
     [right setCustomSpacing:14 afterView:_mergeButton];
     [right setCustomSpacing:14 afterView:_alignNote];
-    [right setCustomSpacing:14 afterView:_exportButton];
+    [right setCustomSpacing:14 afterView:_sendButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     _infoHeight = [[infoScroll heightAnchor] constraintGreaterThanOrEqualToConstant:220];
     _infoHeight.active = YES;
@@ -784,6 +794,7 @@ const int kPreviewSize = 3200;
     const BOOL current = [self resultIsCurrent];
     // 書き出すのは、今の設定で合成した結果だけ（設定を変えたら再結合するまで書き出さない）。
     [_exportButton setEnabled:enough && current && _busyCount == 0];
+    [_sendButton setEnabled:enough && current && _busyCount == 0];
     NSString* title = !_uiEverMerged ? @"HDR結合開始" : (current ? @"結合済み" : @"再結合中…");
     [_mergeButton setTitle:title];
     [_mergeButton setEnabled:enough && !current && _busyCount == 0];
@@ -1522,6 +1533,10 @@ const int kPreviewSize = 3200;
 
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if ([item action] == @selector(exportDNG:)) return _rows.count >= 2 && [self resultIsCurrent] && _busyCount == 0;
+    if ([item action] == @selector(sendToApp:)) {
+        [item setTitle:[_sendButton title]];
+        return _rows.count >= 2 && [self resultIsCurrent] && _busyCount == 0;
+    }
     if ([item action] == @selector(startMerge:)) return [_mergeButton isEnabled];
     if ([item action] == @selector(clearFrames:)) return _rows.count > 0;
     return YES;
@@ -1545,6 +1560,59 @@ const int kPreviewSize = 3200;
                   completionHandler:^(NSModalResponse result) {
                       if (result == NSModalResponseOK) [self writeDNGToPath:[[panel URL] path]];
                   }];
+}
+
+// ---- ほかのアプリに送る ----
+
+- (void)updateSendButtonTitle {
+    NSString* name = [SendTarget applicationName];
+    [_sendButton setTitle:name ? [NSString stringWithFormat:@"%@ に送る", name] : @"アプリに送る…"];
+    [_sendButton setToolTip:name ? [NSString stringWithFormat:@"合成した DNG を保存して、%@ で開きます。Lightroom Classic では読み込みの画面が開きます。"
+                                                           @"送る先・保存先は環境設定（⌘,）で変えられます", name]
+                                 : @"送る先のアプリが見つかりません。押すと環境設定を開きます"];
+}
+
+- (void)sendTargetChanged:(NSNotification*)n {
+    (void)n;
+    [self updateSendButtonTitle];
+}
+
+// 合成した DNG を保存先（既定は基準フレームと同じフォルダ）に書き出し、送る先のアプリ（既定は Lightroom Classic）で開く。
+// 同じ名前のファイルがあれば番号を付ける（利用者が書き出したファイルを上書きしない）。
+- (void)sendToApp:(id)sender {
+    (void)sender;
+    if (_rows.count < 2 || ![self resultIsCurrent] || !_uiReferencePath || _busyCount > 0) return;
+    NSURL* app = [SendTarget applicationURL];
+    if (!app) {
+        [_status setStringValue:@"送る先のアプリが見つかりません。環境設定で選んでください"];
+        [[PreferencesWindowController shared] showWindow:nil];
+        return;
+    }
+    NSString* folder = [SendTarget folderPath] ?: [_uiReferencePath stringByDeletingLastPathComponent];
+    BOOL isDir = NO;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:folder isDirectory:&isDir] || !isDir || ![fm isWritableFileAtPath:folder]) {
+        [self showError:[NSString stringWithFormat:@"保存先のフォルダに書き込めません: %@\n環境設定（⌘,）で保存先を選び直してください。", folder]];
+        return;
+    }
+    NSString* name = [[[_uiReferencePath lastPathComponent] stringByDeletingPathExtension] stringByAppendingString:@"_HDR.dng"];
+    NSString* path = [SendTarget uniquePathInFolder:folder name:name];
+    NSString* appName = [SendTarget applicationName];
+    [self writeDNGToPath:path
+                    then:^{
+                        [self->_status setStringValue:[NSString stringWithFormat:@"%@ で開いています…", appName]];
+                        [SendTarget openFile:path
+                             withApplication:app
+                                        done:^(NSError* error) {
+                                            if (error) {
+                                                [self->_status setStringValue:@"送れませんでした（DNG は保存してあります）"];
+                                                [self showError:[NSString stringWithFormat:@"%@ で開けませんでした: %@\nDNG は %@ に保存してあります。",
+                                                                                           appName, [error localizedDescription], path]];
+                                            } else {
+                                                [self->_status setStringValue:[NSString stringWithFormat:@"%@ に送りました: %@", appName, path]];
+                                            }
+                                        }];
+                    }];
 }
 
 - (hdr::OutputFormat)requestedFormat {
@@ -1579,6 +1647,11 @@ const int kPreviewSize = 3200;
 }
 
 - (void)writeDNGToPath:(NSString*)path {
+    [self writeDNGToPath:path then:nil];
+}
+
+// 書き出して、うまくいったら then を（メインスレッドで）呼ぶ。
+- (void)writeDNGToPath:(NSString*)path then:(void (^)(void))then {
     const std::string out = [path fileSystemRepresentation];
     hdr::DngWriteOptions opt;
     opt.enable_lens_profile = [_lensXmpCheck state] == NSControlStateValueOn;
@@ -1621,6 +1694,7 @@ const int kPreviewSize = 3200;
                 [self showError:error];
             } else {
                 [self endBusy:[NSString stringWithFormat:@"書き出しました%@: %@", summary, path]];
+                if (then) then();
             }
             [self finishAutomationIfNeeded];
         });
@@ -1683,6 +1757,7 @@ const int kPreviewSize = 3200;
     const char* mode = getenv("RBH_VIEW");
     if (snap) _snapshotPath = [NSString stringWithUTF8String:snap];
     if (exportPath) _autoExportPath = [NSString stringWithUTF8String:exportPath];
+    _autoSend = getenv("RBH_SEND") != nullptr;
     if (const char* ch = getenv("RBH_CHANGE")) _autoChange = [NSString stringWithUTF8String:ch];
     if (getenv("RBH_SCROLL_RIGHT")) {
         // 検証用: 「解析の結果」を高くして、右の欄を一番下まで送った状態を撮る（説明書の図）。
@@ -1737,6 +1812,11 @@ const int kPreviewSize = 3200;
             [self scheduleMerge:NO];
             return;
         }
+    }
+    if (_autoSend) {
+        _autoSend = NO;
+        [self sendToApp:nil];
+        if (_busyCount > 0) return;
     }
     if (_autoExportPath) {
         NSString* p = _autoExportPath;

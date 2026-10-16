@@ -15,13 +15,14 @@ FULL = ["01_empty", "02_loaded", "03_before_merge", "04_merged", "05_overlay", "
         "08_diff", "09_align", "10_lighthouse", "11_lh_sourcemap", "12_lh_overlay", "18_lh_ghost"]
 
 # 名前: (元の画面, (左, 上, 右, 下))
-RIGHT = (2748, 0, 3360, 1620)  # 右の欄（基準フレーム〜DNG を書き出す）
+RIGHT = (2748, 0, 3360, 1660)  # 右の欄（基準フレーム〜Lightroom Classic に送る）
 CROPS = {
     "c_right_merged": ("04_merged", RIGHT),
     "c_right_align": ("09_align", (2748, 0, 3360, 560)),  # 右の欄の上（位置合わせまで）
     "c_right_changed": ("07_changed", RIGHT),
     "c_info": ("19_info", (2748, 250, 3360, 1250)),
     "c_toolbar": ("04_merged", (782, 10, 2070, 132)),
+    "c_prefs": ("20_prefs", None),  # 環境設定のウインドウ（全体）
 }
 
 
@@ -36,7 +37,8 @@ def main() -> None:
         w, h = img.size
         save(img.resize((2000, round(h * 2000 / w)), Image.LANCZOS), name)
     for name, (src, box) in CROPS.items():
-        save(Image.open(RAW / f"{src}.png").crop(box), name)
+        img = Image.open(RAW / f"{src}.png")
+        save(img.crop(box) if box else img, name)
 
 
 if __name__ == "__main__":

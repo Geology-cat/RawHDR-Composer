@@ -30,3 +30,6 @@ shot 11_lh_sourcemap RBH_OPEN="$LH" RBH_VIEW=2
 shot 12_lh_overlay RBH_OPEN="$LH" RBH_VIEW=1
 shot 18_lh_ghost RBH_OPEN="$LH" RBH_VIEW=6
 shot 19_info RBH_OPEN="$COL" RBH_SCROLL_RIGHT=1
+# 環境設定のウインドウ（送る先・保存先は利用者の設定のまま写るので、既定の状態で撮る）。
+( RBH_PREFS_SNAPSHOT="$PWD/$OUT/20_prefs.png" "$APP" >/dev/null 2>&1 )
+[ -f "$OUT/20_prefs.png" ] && echo "ok 20_prefs" || echo "NG 20_prefs"

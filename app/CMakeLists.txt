@@ -21,6 +21,8 @@ add_executable(RawHDRComposerApp MACOSX_BUNDLE
     src/MainWindowController.mm
     src/PreviewView.mm
     src/DngConverterPrompt.mm
+    src/PreferencesWindowController.mm
+    src/SendTarget.mm
     ${RBH_THIRD_PARTY_NOTICES}
     ${RBH_APP_ICON}
 )

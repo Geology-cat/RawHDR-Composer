@@ -341,7 +341,7 @@ Adobe DNG Converter（Adobe の無料アプリ）が入っていないと、起�
 \cnum{8} & 基準フレーム & DNG の明るさ・撮影情報の基準にするフレーム \\
 \cnum{9} & 合成の設定 & つなぎ方・ノイズを減らす平均・ゴースト対策・明暗差の圧縮など（第\ref{ch:settings}章） \\
 \cnum{10} & HDR 結合のボタン & 最初の合成を始める（\ui{HDR結合開始}）。その後は設定を変えると自動で合成し直す（\ui{再結合中…}→\ui{結合済み}） \\
-\cnum{11} & 書き出し & DNG の形式と、\ui{DNG を書き出す…}のボタン \\
+\cnum{11} & 書き出し & DNG の形式と、\ui{DNG を書き出す…}・\ui{Adobe Lightroom Classic に送る}のボタン \\
 \cnum{12} & 解析の結果 & 露出の測り方・合成の内訳など（第\ref{ch:info}章）。右の欄は、ウインドウが低いときは縦にスクロールできる \\
 \cnum{13} & 状態の表示 & いま何をしているか、次に何をすればよいか \\
 \bottomrule
@@ -449,15 +449,20 @@ RAW を読み込み、合成し、DNG を書き出して、Lightroom で仕上�
 \begin{step}{5}{DNG を書き出す}
 右の欄の\ui{DNG を書き出す…}を押し（\key{⌘}\key{E} でも可）、保存する場所と名前を決めて\ui{保存}を押します。
 名前と場所は、はじめは基準フレームと同じフォルダの「（基準フレームの名前）\_HDR.dng」になっています。
+Lightroom Classic で仕上げるなら、すぐ下の\ui{Adobe Lightroom Classic に送る}を押すと、保存と Lightroom Classic への受け渡しが一度にできます
+（\key{⌘}\key{⇧}\key{E} でも可。\ref{sec:send}節）。
 
 \centering
 \shot[0.44\linewidth]{c_right_merged.jpg}{
-  \draw[hl] (0.03,{1-0.952}) rectangle (0.97,{1-0.984});
-  \node[lbl,anchor=east] (x) at (-0.05,{1-0.968}) {\textbf{押して保存}};
-  \draw[arr] (x.east) -- (0.03,{1-0.968});
-  \draw[hl] (0.03,{1-0.845}) rectangle (0.97,{1-0.871});
-  \node[lbl,anchor=east] (f) at (-0.05,{1-0.85}) {形式は\\\ui{自動（おすすめ）}\\のままでよい};
-  \draw[arr] (f.east) -- (0.03,{1-0.858});
+  \draw[hl] (0.03,{1-0.929}) rectangle (0.97,{1-0.960});
+  \node[lbl,anchor=east] (x) at (-0.05,{1-0.945}) {\textbf{押して保存}};
+  \draw[arr] (x.east) -- (0.03,{1-0.945});
+  \draw[hl] (0.03,{1-0.825}) rectangle (0.97,{1-0.850});
+  \node[lbl,anchor=east] (f) at (-0.05,{1-0.830}) {形式は\\\ui{自動（おすすめ）}\\のままでよい};
+  \draw[arr] (f.east) -- (0.03,{1-0.837});
+  \draw[hl] (0.03,{1-0.966}) rectangle (0.97,{1-0.990});
+  \node[lbl,anchor=west] (s) at (1.05,{1-0.978}) {保存して\\Lightroom へ};
+  \draw[arr] (s.west) -- (0.97,{1-0.978});
 }
 \end{step}
 
@@ -479,6 +484,7 @@ RAW を読み込み、合成し、DNG を書き出して、Lightroom で仕上�
 % ---------------------------------------------------------------------------------
 \begin{step}{6}{Lightroom で仕上げる}
 書き出した DNG を Lightroom Classic に読み込みます（または Photoshop で開くと Camera Raw が開きます）。
+\ui{Adobe Lightroom Classic に送る}を使ったときは、Lightroom Classic の読み込みの画面が開くので、\ui{追加}を選んで\ui{読み込み}を押します。
 普通の RAW と同じように仕上げられます。おすすめの手順は第\ref{ch:lr}章で説明します。
 \end{step}
 
@@ -489,12 +495,12 @@ RAW を読み込み、合成し、DNG を書き出して、Lightroom で仕上�
 
 \centering
 \shot[0.42\linewidth]{c_right_changed.jpg}{
-  \draw[hl] (0.03,{1-0.773}) rectangle (0.97,{1-0.800});
-  \node[lbl,anchor=east] (r) at (-0.05,{1-0.786}) {\ui{再結合中…}};
-  \draw[arr] (r.east) -- (0.03,{1-0.786});
-  \draw[hl] (0.03,{1-0.535}) rectangle (0.97,{1-0.582});
-  \node[lbl,anchor=east] (c) at (-0.05,{1-0.558}) {設定を変えた};
-  \draw[arr] (c.east) -- (0.03,{1-0.558});
+  \draw[hl] (0.03,{1-0.754}) rectangle (0.97,{1-0.781});
+  \node[lbl,anchor=east] (r) at (-0.05,{1-0.767}) {\ui{再結合中…}};
+  \draw[arr] (r.east) -- (0.03,{1-0.767});
+  \draw[hl] (0.03,{1-0.522}) rectangle (0.97,{1-0.568});
+  \node[lbl,anchor=east] (c) at (-0.05,{1-0.545}) {設定を変えた};
+  \draw[arr] (c.east) -- (0.03,{1-0.545});
 }
 \end{tip}
 
@@ -639,21 +645,22 @@ Camera Raw の既定の見え方に近いトーンカーブで描いています
 
 \begin{figure}[htbp]
 \centering
-\shot[0.55\linewidth]{c_right_merged.jpg}{
-  \node[num] at (-0.05,{1-0.045}) {A};
-  \node[num] at (-0.05,{1-0.115}) {B};
-  \node[num] at (-0.05,{1-0.265}) {C};
-  \node[num] at (-0.05,{1-0.324}) {D};
-  \node[num] at (-0.05,{1-0.381}) {E};
-  \node[num] at (-0.05,{1-0.427}) {F};
-  \node[num] at (-0.05,{1-0.484}) {G};
-  \draw[thick,accent] (-0.015,{1-0.445}) -- (-0.015,{1-0.525});
-  \node[num] at (-0.05,{1-0.634}) {H};
-  \draw[thick,accent] (-0.015,{1-0.535}) -- (-0.015,{1-0.730});
-  \node[num] at (-0.05,{1-0.751}) {I};
-  \node[num] at (-0.05,{1-0.786}) {J};
-  \node[num] at (-0.05,{1-0.858}) {K};
-  \node[num] at (-0.05,{1-0.935}) {L};
+\shot[0.52\linewidth]{c_right_merged.jpg}{
+  \node[num] at (-0.05,{1-0.044}) {A};
+  \node[num] at (-0.05,{1-0.112}) {B};
+  \node[num] at (-0.05,{1-0.259}) {C};
+  \node[num] at (-0.05,{1-0.316}) {D};
+  \node[num] at (-0.05,{1-0.372}) {E};
+  \node[num] at (-0.05,{1-0.417}) {F};
+  \node[num] at (-0.05,{1-0.472}) {G};
+  \draw[thick,accent] (-0.015,{1-0.434}) -- (-0.015,{1-0.512});
+  \node[num] at (-0.05,{1-0.619}) {H};
+  \draw[thick,accent] (-0.015,{1-0.522}) -- (-0.015,{1-0.712});
+  \node[num] at (-0.05,{1-0.733}) {I};
+  \node[num] at (-0.05,{1-0.767}) {J};
+  \node[num] at (-0.05,{1-0.837}) {K};
+  \node[num] at (-0.05,{1-0.912}) {L};
+  \node[num] at (-0.05,{1-0.978}) {M};
 }
 \caption{右の欄の設定}\label{fig:right}
 \end{figure}
@@ -675,6 +682,7 @@ I & 色の縁取りを補正 & オン & オン／オフ & レンズの色ずれ�
 J & HDR 結合のボタン & --- & --- & 合成を始める \\
 K & 書き出しの形式 & 自動 & 自動／CFA／LinearRaw & DNG の中身の形 \\
 L & レンズ補正を有効にして開く & オン & オン／オフ & DNG を開いたときにレンズ補正を入れておく \\
+M & Lightroom Classic に送る & --- & 送る先・保存先は環境設定 & 保存して、そのまま Lightroom Classic で開く \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -934,6 +942,31 @@ LinearRaw（色補間済み） & このアプリが色補間した形。Camera R
   \item オフでも、Lightroom の\ui{レンズ補正}→\ui{プロファイル補正を使用}で、レンズは自動で認識されます。
 \end{itemize}
 
+% ---------------------------------------------------------------------------------
+\section{M. Lightroom Classic に送る}\label{sec:send}
+合成した DNG を保存して、そのまま Lightroom Classic で開きます（\key{⌘}\key{⇧}\key{E} でも可）。保存の画面は出ません。
+\begin{itemize}
+  \item \textbf{保存する場所}: 基準フレームと同じフォルダに「（基準フレームの名前）\_HDR.dng」の名前で保存します。
+        同じ名前のファイルがあるときは「\_HDR-2.dng」のように番号を付けます（前に書き出したファイルを上書きしません）。
+  \item \textbf{Lightroom Classic では読み込みの画面が開きます}。\ui{追加}を選んで\ui{読み込み}を押してください
+        （ファイルは保存した場所のまま、カタログに登録されます）。
+  \item 形式・レンズ補正は、\ui{DNG を書き出す…}と同じく右の欄の設定（K・L）に従います。
+\end{itemize}
+
+送る先のアプリと保存する場所は、\ui{RawHDR Composer}メニューの\ui{環境設定…}（\key{⌘}\key{,}）で変えられます（図\ref{fig:prefs}）。
+送る先のメニューの\ui{ほかのアプリケーションを選ぶ…}で、Photoshop・Lightroom（クラウド版）なども選べます。送る先を変えると、ボタンの名前も「（アプリの名前）に送る」に変わります。Lightroom Classic が入っていないときは\ui{アプリに送る…}になり、押すと環境設定が開きます。
+
+\begin{figure}[htbp]
+\centering
+\shot[0.7\linewidth]{c_prefs.jpg}{
+  \node[lbl,anchor=west] (a) at (1.03,{1-0.22}) {送る先のアプリ};
+  \draw[arr] (a.west) -- (0.97,{1-0.30});
+  \node[lbl,anchor=west] (b) at (1.03,{1-0.55}) {保存する場所};
+  \draw[arr] (b.west) -- (0.97,{1-0.455});
+}
+\caption{環境設定}\label{fig:prefs}
+\end{figure}
+
 % =====================================================================================
 \chapter{解析の結果の読み方}\label{ch:info}
 % =====================================================================================
@@ -1028,6 +1061,13 @@ LinearRaw（色補間済み） & このアプリが色補間した形。Camera R
 \faq{\ui{DNG を書き出す…}が押せない}{
 まだ合成していないか、設定を変えたので合成し直している途中です。最初は\ui{HDR結合開始}を押し、合成し直している途中なら\ui{結合済み}になるまで待ってください。}
 
+\faq{\ui{Lightroom Classic に送る}を押しても、Lightroom に写真が入らない}{
+\begin{itemize}
+  \item Lightroom Classic の読み込みの画面で\ui{追加}を選び、\ui{読み込み}を押してください（送っただけでは読み込まれません）。
+  \item DNG は保存してあるので（基準フレームと同じフォルダの「\_HDR.dng」）、Lightroom の\ui{読み込み}から手で選ぶこともできます。
+  \item ボタンが\ui{アプリに送る…}になっているときは、Lightroom Classic が見つかっていません。環境設定（\key{⌘}\key{,}）で選んでください。
+\end{itemize}}
+
 \faq{つなぎ目に段差や、まだら模様が見える}{
 \begin{itemize}
   \item \ui{重みのぼかし}を 32〜64 px に上げる。
@@ -1093,6 +1133,8 @@ Adobe DNG Converter を入れると、そろいます（メニュー\ui{RawHDR C
 \key{⌘}\key{O} & RAW を開く（追加する） \\
 \key{⌘}\key{R} & HDR 結合（合成する・合成し直す） \\
 \key{⌘}\key{E} & DNG を書き出す \\
+\key{⌘}\key{⇧}\key{E} & Lightroom Classic に送る（送る先は環境設定） \\
+\key{⌘}\key{,} & 環境設定（送る先のアプリ・保存する場所） \\
 \key{⌘}\key{0} & プレビューの全体を表示 \\
 \key{⌘}\key{1} & プレビューを 100\% で表示 \\
 \key{⌘}\key{＋}／\key{⌘}\key{−} & 拡大／縮小 \\

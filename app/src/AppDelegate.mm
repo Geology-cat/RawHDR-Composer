@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 
 #import "MainWindowController.h"
+#import "PreferencesWindowController.h"
 
 @implementation AppDelegate {
     MainWindowController* _controller;
@@ -25,6 +26,26 @@
         [_controller addFiles:_pending];
         [_pending removeAllObjects];
     }
+    // 検証用: RBH_PREFS_SNAPSHOT に環境設定のウインドウの中身を PNG で書いて終了する（説明書の図）。
+    if (const char* prefsSnap = getenv("RBH_PREFS_SNAPSHOT")) {
+        NSString* path = [NSString stringWithUTF8String:prefsSnap];
+        PreferencesWindowController* prefs = [PreferencesWindowController shared];
+        [prefs showWindow:nil];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSView* v = [[prefs window] contentView];
+            NSBitmapImageRep* rep = [v bitmapImageRepForCachingDisplayInRect:[v bounds]];
+            NSGraphicsContext* ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+            [NSGraphicsContext saveGraphicsState];
+            [NSGraphicsContext setCurrentContext:ctx];
+            [[NSColor windowBackgroundColor] setFill];
+            NSRectFill([v bounds]);
+            [NSGraphicsContext restoreGraphicsState];
+            [v displayRectIgnoringOpacity:[v bounds] inContext:ctx];
+            [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+            [NSApp terminate:nil];
+        });
+        return;
+    }
     // 検証用: RBH_OPEN（改行区切りのパス）を開き、RBH_SNAPSHOT にウインドウの中身を PNG で書いて終了する。
     [_controller runAutomationFromEnvironment];
     // Adobe DNG Converter が無ければ入手を案内する（無くても動くことを明記したうえで。検証用の自動操作のときは出さない）。
@@ -45,12 +66,18 @@
     }
 }
 
+- (void)showPreferences:(id)sender {
+    [[PreferencesWindowController shared] showWindow:sender];
+}
+
 - (void)buildMenu {
     NSMenu* bar = [[NSMenu alloc] init];
 
     NSMenuItem* appItem = [[NSMenuItem alloc] init];
     NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"RawHDR Composer"];
     [appMenu addItemWithTitle:@"RawHDR Composer について" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"環境設定…" action:@selector(showPreferences:) keyEquivalent:@","];
     [appMenu addItemWithTitle:@"Adobe DNG Converter…" action:@selector(showDngConverterPrompt:) keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
     [appMenu addItemWithTitle:@"RawHDR Composer を隠す" action:@selector(hide:) keyEquivalent:@"h"];
@@ -67,6 +94,9 @@
     [fileMenu addItemWithTitle:@"RAW を開く…" action:@selector(openDocument:) keyEquivalent:@"o"];
     [fileMenu addItemWithTitle:@"HDR 結合" action:@selector(startMerge:) keyEquivalent:@"r"];
     [fileMenu addItemWithTitle:@"DNG を書き出す…" action:@selector(exportDNG:) keyEquivalent:@"e"];
+    // 題名は送る先のアプリの名前に合わせて変わる（メインウインドウの validateMenuItem）。
+    NSMenuItem* send = [fileMenu addItemWithTitle:@"Lightroom Classic に送る" action:@selector(sendToApp:) keyEquivalent:@"e"];
+    [send setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagShift];
     [fileMenu addItem:[NSMenuItem separatorItem]];
     [fileMenu addItemWithTitle:@"すべて取り除く" action:@selector(clearFrames:) keyEquivalent:@""];
     [fileMenu addItemWithTitle:@"閉じる" action:@selector(performClose:) keyEquivalent:@"w"];
