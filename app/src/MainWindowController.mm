@@ -668,7 +668,6 @@ const int kPreviewSize = 3200;
     [_formatNote setTextColor:[NSColor secondaryLabelColor]];
 
     _exportButton = [NSButton buttonWithTitle:@"DNG を書き出す…" target:self action:@selector(exportDNG:)];
-    [_exportButton setKeyEquivalent:@"\r"];
     [_exportButton setControlSize:NSControlSizeRegular];  // Large は macOS 11 以降
     _sendButton = [NSButton buttonWithTitle:@"Lightroom Classic に送る" target:self action:@selector(sendToApp:)];
     [self updateSendButtonTitle];
@@ -694,7 +693,7 @@ const int kPreviewSize = 3200;
         [self sectionLabel:@"基準フレーム"], _refPopup,
         [self sectionLabel:@"位置合わせ"], _alignPopup, _nudgeRow, _alignNote,
         [self sectionLabel:@"合成"], rampRow, safetyRow, featherRow, _averageCheck, _deghostCheck, ghostRow, compressRow, _compressAutoCheck, highlightRow, shadowRow, _caCheck, _mergeButton,
-        [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _exportButton, _sendButton,
+        [self sectionLabel:@"書き出し"], _formatPopup, _formatNote, _lensXmpCheck, _sendButton, _exportButton,
         [self sectionLabel:@"解析の結果"], infoScroll
     ]];
     [right setOrientation:NSUserInterfaceLayoutOrientationVertical];
@@ -707,7 +706,7 @@ const int kPreviewSize = 3200;
     [right setCustomSpacing:10 afterView:_caCheck];
     [right setCustomSpacing:14 afterView:_mergeButton];
     [right setCustomSpacing:14 afterView:_alignNote];
-    [right setCustomSpacing:14 afterView:_sendButton];
+    [right setCustomSpacing:14 afterView:_exportButton];
     [infoScroll setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     _infoHeight = [[infoScroll heightAnchor] constraintGreaterThanOrEqualToConstant:220];
     _infoHeight.active = YES;
@@ -798,10 +797,13 @@ const int kPreviewSize = 3200;
     NSString* title = !_uiEverMerged ? @"HDR結合開始" : (current ? @"結合済み" : @"再結合中…");
     [_mergeButton setTitle:title];
     [_mergeButton setEnabled:enough && !current && _busyCount == 0];
-    // 次にすべき操作のボタンを既定（青、Return キー）にする: 合成前・設定変更後は結合、合成後は書き出し。
+    // 次にすべき操作のボタンを既定（青、Return キー）にする: 合成前・設定変更後は結合、合成後は「送る」
+    // （送る先のアプリが見つからないときは「DNG を書き出す…」）。
     const BOOL exportNext = enough && current;
+    const BOOL canSend = [SendTarget applicationURL] != nil;
     [_mergeButton setKeyEquivalent:exportNext ? @"" : @"\r"];
-    [_exportButton setKeyEquivalent:exportNext ? @"\r" : @""];
+    [_sendButton setKeyEquivalent:exportNext && canSend ? @"\r" : @""];
+    [_exportButton setKeyEquivalent:exportNext && !canSend ? @"\r" : @""];
 }
 
 // 合成に効く設定・フレームが変わった（合成結果は古くなる）。
@@ -1575,6 +1577,7 @@ const int kPreviewSize = 3200;
 - (void)sendTargetChanged:(NSNotification*)n {
     (void)n;
     [self updateSendButtonTitle];
+    [self updateControls];  // 既定のボタンは送る先のアプリがあるかで変わる
 }
 
 // 合成した DNG を保存先（既定は基準フレームと同じフォルダ）に書き出し、送る先のアプリ（既定は Lightroom Classic）で開く。
@@ -1755,7 +1758,12 @@ const int kPreviewSize = 3200;
     const char* snap = getenv("RBH_SNAPSHOT");
     const char* exportPath = getenv("RBH_EXPORT");
     const char* mode = getenv("RBH_VIEW");
-    if (snap) _snapshotPath = [NSString stringWithUTF8String:snap];
+    if (snap) {
+        _snapshotPath = [NSString stringWithUTF8String:snap];
+        // 撮った図が「スクロールバーを表示」の設定（マウスをつないでいるか）で変わらないよう、重ねて表示する方式にする。
+        [_rightScroll setScrollerStyle:NSScrollerStyleOverlay];
+        [[_infoView enclosingScrollView] setScrollerStyle:NSScrollerStyleOverlay];
+    }
     if (exportPath) _autoExportPath = [NSString stringWithUTF8String:exportPath];
     _autoSend = getenv("RBH_SEND") != nullptr;
     if (const char* ch = getenv("RBH_CHANGE")) _autoChange = [NSString stringWithUTF8String:ch];

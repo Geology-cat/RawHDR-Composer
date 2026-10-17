@@ -341,7 +341,7 @@ Adobe DNG Converter（Adobe の無料アプリ）が入っていないと、起�
 \cnum{8} & 基準フレーム & DNG の明るさ・撮影情報の基準にするフレーム \\
 \cnum{9} & 合成の設定 & つなぎ方・ノイズを減らす平均・ゴースト対策・明暗差の圧縮など（第\ref{ch:settings}章） \\
 \cnum{10} & HDR 結合のボタン & 最初の合成を始める（\ui{HDR結合開始}）。その後は設定を変えると自動で合成し直す（\ui{再結合中…}→\ui{結合済み}） \\
-\cnum{11} & 書き出し & DNG の形式と、\ui{DNG を書き出す…}・\ui{Adobe Lightroom Classic に送る}のボタン \\
+\cnum{11} & 書き出し & DNG の形式と、\ui{Adobe Lightroom Classic に送る}（合成後の青いボタン）・\ui{DNG を書き出す…}のボタン \\
 \cnum{12} & 解析の結果 & 露出の測り方・合成の内訳など（第\ref{ch:info}章）。右の欄は、ウインドウが低いときは縦にスクロールできる \\
 \cnum{13} & 状態の表示 & いま何をしているか、次に何をすればよいか \\
 \bottomrule
@@ -446,22 +446,23 @@ RAW を読み込み、合成し、DNG を書き出して、Lightroom で仕上�
 \end{step}
 
 % ---------------------------------------------------------------------------------
-\begin{step}{5}{DNG を書き出す}
-右の欄の\ui{DNG を書き出す…}を押し（\key{⌘}\key{E} でも可）、保存する場所と名前を決めて\ui{保存}を押します。
-名前と場所は、はじめは基準フレームと同じフォルダの「（基準フレームの名前）\_HDR.dng」になっています。
-Lightroom Classic で仕上げるなら、すぐ下の\ui{Adobe Lightroom Classic に送る}を押すと、保存と Lightroom Classic への受け渡しが一度にできます
-（\key{⌘}\key{⇧}\key{E} でも可。\ref{sec:send}節）。
+\begin{step}{5}{Lightroom Classic に送る（または DNG を書き出す）}
+合成が終わると、右の欄の青いボタン\ui{Adobe Lightroom Classic に送る}を押します（\key{Return}・\key{⌘}\key{⇧}\key{E} でも可）。
+DNG を基準フレームと同じフォルダに「（基準フレームの名前）\_HDR.dng」の名前で保存して、Lightroom Classic の読み込みの画面を開きます（\ref{sec:send}節）。
+
+保存する場所と名前を自分で決めたいとき・Lightroom Classic を使わないときは、すぐ下の\ui{DNG を書き出す…}を押し（\key{⌘}\key{E} でも可）、
+保存する場所と名前を決めて\ui{保存}を押します（はじめは同じく、基準フレームと同じフォルダの「（基準フレームの名前）\_HDR.dng」になっています）。
 
 \centering
 \shot[0.44\linewidth]{c_right_merged.jpg}{
   \draw[hl] (0.03,{1-0.929}) rectangle (0.97,{1-0.960});
-  \node[lbl,anchor=east] (x) at (-0.05,{1-0.945}) {\textbf{押して保存}};
+  \node[lbl,anchor=east] (x) at (-0.05,{1-0.945}) {\textbf{押して}\\\textbf{Lightroom へ}};
   \draw[arr] (x.east) -- (0.03,{1-0.945});
   \draw[hl] (0.03,{1-0.825}) rectangle (0.97,{1-0.850});
   \node[lbl,anchor=east] (f) at (-0.05,{1-0.830}) {形式は\\\ui{自動（おすすめ）}\\のままでよい};
   \draw[arr] (f.east) -- (0.03,{1-0.837});
   \draw[hl] (0.03,{1-0.966}) rectangle (0.97,{1-0.990});
-  \node[lbl,anchor=west] (s) at (1.05,{1-0.978}) {保存して\\Lightroom へ};
+  \node[lbl,anchor=west] (s) at (1.05,{1-0.978}) {場所と名前を\\決めて保存};
   \draw[arr] (s.west) -- (0.97,{1-0.978});
 }
 \end{step}
@@ -483,8 +484,8 @@ Lightroom Classic で仕上げるなら、すぐ下の\ui{Adobe Lightroom Classi
 
 % ---------------------------------------------------------------------------------
 \begin{step}{6}{Lightroom で仕上げる}
-書き出した DNG を Lightroom Classic に読み込みます（または Photoshop で開くと Camera Raw が開きます）。
-\ui{Adobe Lightroom Classic に送る}を使ったときは、Lightroom Classic の読み込みの画面が開くので、\ui{追加}を選んで\ui{読み込み}を押します。
+\ui{Adobe Lightroom Classic に送る}を押すと Lightroom Classic の読み込みの画面が開くので、\ui{追加}を選んで\ui{読み込み}を押します。
+\ui{DNG を書き出す…}で保存したときは、その DNG を Lightroom Classic に読み込みます（または Photoshop で開くと Camera Raw が開きます）。
 普通の RAW と同じように仕上げられます。おすすめの手順は第\ref{ch:lr}章で説明します。
 \end{step}
 
@@ -660,7 +661,7 @@ Camera Raw の既定の見え方に近いトーンカーブで描いています
   \node[num] at (-0.05,{1-0.767}) {J};
   \node[num] at (-0.05,{1-0.837}) {K};
   \node[num] at (-0.05,{1-0.912}) {L};
-  \node[num] at (-0.05,{1-0.978}) {M};
+  \node[num] at (-0.05,{1-0.945}) {M};
 }
 \caption{右の欄の設定}\label{fig:right}
 \end{figure}
@@ -944,7 +945,7 @@ LinearRaw（色補間済み） & このアプリが色補間した形。Camera R
 
 % ---------------------------------------------------------------------------------
 \section{M. Lightroom Classic に送る}\label{sec:send}
-合成した DNG を保存して、そのまま Lightroom Classic で開きます（\key{⌘}\key{⇧}\key{E} でも可）。保存の画面は出ません。
+合成した DNG を保存して、そのまま Lightroom Classic で開きます。合成が終わると青いボタン（既定のボタン）になるので、\key{Return} でも押せます（\key{⌘}\key{⇧}\key{E} でも可）。保存の画面は出ません。
 \begin{itemize}
   \item \textbf{保存する場所}: 基準フレームと同じフォルダに「（基準フレームの名前）\_HDR.dng」の名前で保存します。
         同じ名前のファイルがあるときは「\_HDR-2.dng」のように番号を付けます（前に書き出したファイルを上書きしません）。
@@ -954,7 +955,7 @@ LinearRaw（色補間済み） & このアプリが色補間した形。Camera R
 \end{itemize}
 
 送る先のアプリと保存する場所は、\ui{RawHDR Composer}メニューの\ui{環境設定…}（\key{⌘}\key{,}）で変えられます（図\ref{fig:prefs}）。
-送る先のメニューの\ui{ほかのアプリケーションを選ぶ…}で、Photoshop・Lightroom（クラウド版）なども選べます。送る先を変えると、ボタンの名前も「（アプリの名前）に送る」に変わります。Lightroom Classic が入っていないときは\ui{アプリに送る…}になり、押すと環境設定が開きます。
+送る先のメニューの\ui{ほかのアプリケーションを選ぶ…}で、Photoshop・Lightroom（クラウド版）なども選べます。送る先を変えると、ボタンの名前も「（アプリの名前）に送る」に変わります。Lightroom Classic が入っていないときは\ui{アプリに送る…}になり、押すと環境設定が開きます（そのときは\ui{DNG を書き出す…}が青いボタンになります）。
 
 \begin{figure}[htbp]
 \centering
@@ -1138,7 +1139,7 @@ Adobe DNG Converter を入れると、そろいます（メニュー\ui{RawHDR C
 \key{⌘}\key{0} & プレビューの全体を表示 \\
 \key{⌘}\key{1} & プレビューを 100\% で表示 \\
 \key{⌘}\key{＋}／\key{⌘}\key{−} & 拡大／縮小 \\
-\key{Return} & 青いボタン（\ui{HDR結合開始}・\ui{DNG を書き出す…}）を押す \\
+\key{Return} & 青いボタン（合成前は\ui{HDR結合開始}、合成後は\ui{Adobe Lightroom Classic に送る}）を押す \\
 \key{⌘}\key{W}／\key{⌘}\key{Q} & ウインドウを閉じる／アプリを終了 \\
 \bottomrule
 \end{tabular}
